@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn parses_mac() {
-        assert_eq!(parse_mac("a8:23:fe:01:02:0F").unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]);
+        assert_eq!(parse_mac("a8:23:fe:01:02:0F").unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]); // privacy:allow (fake MAC)
         assert_eq!(parse_mac("A8-23-FE-01-02-0F").unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]);
         assert!(parse_mac("a8:23:fe").is_err());
     }

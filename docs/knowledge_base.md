@@ -16,7 +16,8 @@
 
 ## Devices
 - **All appliances are LG** (source: user, 2026-11-25).
-- TV: model / year / webOS version / IP / MAC — **unknown**.
+- **Private details** (IPs, MACs, serials, ThinQ device IDs, account email) live in `docs/local.md`, which is gitignored. This repo is public: never copy them here, into the plan, fixtures or commits.
+- TV: model / year / webOS version — **unknown**. IP / MAC → `docs/local.md` (not yet recorded).
 - AC: model / ThinQ registration — **unknown**.
 - LG account country (selects the ThinQ region) — **unknown**.
 
@@ -87,6 +88,7 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - Generic standards: `.claude/skills/rust-standards`, `.claude/skills/swift-shell`, `.claude/skills/macos-design`. Project-specific overrides go here.
 
 ## Gotchas
+- The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
 - `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). `/bootstrap` decides whether to keep it.
 - ThinQ PAT and TV client-key are secrets: never in code, fixtures, logs or docs.
 
@@ -100,7 +102,7 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - **P6 Later:** ThinQ MQTT push for live AC state; SSDP TV discovery; launch at login; signing/notarization.
 
 ## Open questions
-- TV model/year, IP, MAC; is "Turn on via Wi-Fi" enabled?
+- TV model/year; IP and MAC (for `docs/local.md`); is "Turn on via Wi-Fi" enabled?
 - AC model; is it registered in the LG ThinQ app?
 - LG account country.
 - Commit policy: one commit per finished task?

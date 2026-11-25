@@ -10,7 +10,8 @@ Input: $ARGUMENTS
 
 ## Do
 1. Read `docs/knowledge_base.md` in full. Classify the input:
-   - **Fact** (device model, IP, API behavior): add it under the right heading with its source (`source: user, <date>` or a URL).
+   - **Fact** (device model, API behavior): add it under the right heading with its source (`source: user, <date>` or a URL).
+   - **Private fact** (IP, MAC, serial, ThinQ device ID, account email): write it to `docs/local.md` (gitignored), never to the knowledge base or plan. The repo is public. In the knowledge base, at most note "recorded in docs/local.md".
    - **Correction** (contradicts an existing entry): replace the entry and leave a short `(corrected <date>: was X)` note so history stays readable.
    - **Decision**: add `D<next>` under **Decisions** as `date · decision · rationale · status: active`. If it replaces an older one, mark that one `superseded by D<n>`. Ask the user before superseding.
    - **Answer to an open question**: record the answer, then remove the question from both the knowledge base and the plan's **Open questions**.

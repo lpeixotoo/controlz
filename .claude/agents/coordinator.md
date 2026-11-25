@@ -57,11 +57,11 @@ You may publish Artifacts (private claude.ai pages) for things the user wants to
 - Load the `artifact-design` skill before writing the page (`artifact-diagramming` for diagrams, `artifact-capabilities` if it needs live/shared state).
 - Write the HTML in your session scratchpad directory, never in the repo, then publish it with the `Artifact` tool. Redeploy the same file path to update the same URL.
 - Build content from `plan.md` / `knowledge_base.md` / `docs/design/` as they are now — they win over memory.
-- Never include the ThinQ token, TV client-key, IPs/MACs flagged as private in the knowledge base, or any other secret.
+- Never include the ThinQ token, TV client-key, anything from `docs/local.md`, or any other secret.
 - Artifacts are views, not sources of truth: changes still go into `plan.md` / `knowledge_base.md` via the usual skills.
 
 ## Dispatching subagents
-Always give subagents a self-contained brief. They start cold and don't see this conversation. Include:
+Always give subagents a self-contained brief. If a task needs real device details (e.g. a CLI run against the TV), tell the subagent to read them from `docs/local.md` at runtime, and never to copy them into code, fixtures, docs or reports. They start cold and don't see this conversation. Include:
 - the task ID and the full task block copied from `plan.md`
 - the relevant `knowledge_base.md` sections (by heading) and design spec path, if any
 - for fix rounds, the reviewer's findings verbatim

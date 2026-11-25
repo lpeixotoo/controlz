@@ -60,6 +60,7 @@ You rarely need the slash commands. Talk to the coordinator in plain language ("
 
 ```bash
 cd controlz
+git config core.hooksPath .githooks   # once per clone: privacy pre-commit hook
 claude              # starts as the coordinator (set in .claude/settings.json)
 > /bootstrap        # first time: answers + plan
 > next              # run the next task
@@ -71,7 +72,7 @@ To talk to Claude without the coordinator, run `claude --agent general-purpose`,
 ### What you will need
 
 - An LG ThinQ **personal access token** from https://connect-pat.lgthinq.com (signed in with your ThinQ account).
-- The TV's IP and MAC address, with **Turn on via Wi-Fi** enabled on the TV (for power-on).
+- The TV's IP and MAC address, with **Turn on via Wi-Fi** enabled on the TV (for power-on). These stay in `docs/local.md`, which is gitignored; the pre-commit hook blocks LAN IPs, MACs, personal emails and ThinQ tokens from being committed.
 - Rust (via `rustup`) and Xcode command-line tools (Swift 6).
 
 ## Repository layout
@@ -82,6 +83,7 @@ README.md
 docs/
   plan.md                  what to do (created by /bootstrap)
   knowledge_base.md        what is true
+  local.md                 private device details (gitignored)
   design/                  UI specs
 core/                      Rust crate (controlz_core)
 app/                       SwiftUI menu-bar app (later phase)
@@ -91,4 +93,5 @@ scripts/plan-status.sh     plan parser used by hooks and /status
   agents/                  coordinator, implementer, reviewer, designer
   skills/                  planning, execution and reference skills
   hooks/                   guard-paths.sh, rust-check.sh
+.githooks/pre-commit       blocks private data from commits
 ```

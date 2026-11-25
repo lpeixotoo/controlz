@@ -14,5 +14,8 @@ build/
 # macOS
 .DS_Store
 
+# Private device/account details (IPs, MACs, serials) — never commit
+docs/local.md
+
 # Claude Code local settings
 .claude/settings.local.json

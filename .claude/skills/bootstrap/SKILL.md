@@ -29,6 +29,8 @@ Ask only what the knowledge base doesn't already answer. Required:
 
 Unknowns are fine. Record them under **Open questions** with the task that needs them.
 
+**Privacy:** the repo is public. Write IPs, MACs, serials, ThinQ device IDs and the account email to `docs/local.md` (gitignored; create it with a `# Controlz — local private details` heading). The knowledge base only says "see docs/local.md".
+
 ## 2. Research gaps
 Fill knowledge-base gaps that block planning (e.g. a specific AC model's ThinQ profile shape, a webOS version quirk). Cite every source. Don't spawn agents for this.
 

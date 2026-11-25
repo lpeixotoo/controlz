@@ -9,7 +9,8 @@
 - Machine, macOS version, Rust toolchain, Swift/Xcode versions, minimum supported macOS.
 
 ## Devices
-- TV: model, year, webOS version, IP, MAC, power-on settings.
+- Private details (IPs, MACs, serials, ThinQ device IDs, account email) → `docs/local.md` (gitignored). Never here.
+- TV: model, year, webOS version, power-on settings.
 - AC: model, ThinQ registration, LG account country → ThinQ region.
 
 ## Architecture

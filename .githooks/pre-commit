@@ -1,0 +1,31 @@
+#!/bin/bash
+# Blocks commits that add private data: LAN IPs, MAC addresses, personal
+# email addresses or ThinQ tokens. Put such data in docs/local.md (gitignored).
+# A line containing "privacy:allow" is skipped (use only for obvious fakes).
+# Enable once per clone: git config core.hooksPath .githooks
+
+ip='(^|[^0-9.])(10\.[0-9]{1,3}|192\.168|172\.(1[6-9]|2[0-9]|3[01])|169\.254)\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)'
+mac='([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}'
+email='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+token='thinqpat_[A-Za-z0-9]{8,}'
+
+hits=$(git diff --cached -U0 --no-color --diff-filter=ACMR -- . ':(exclude).githooks/pre-commit' |
+  awk '/^\+\+\+ /{f=substr($0,7); next} /^\+/{print f": "substr($0,2)}' |
+  grep -v 'privacy:allow' |
+  grep -E "$ip|$mac|$token|$email")
+
+# Re-filter emails: allow noreply and example addresses.
+hits=$(printf '%s\n' "$hits" | while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  if printf '%s' "$line" | grep -qE "$ip|$mac|$token"; then echo "$line"; continue; fi
+  bad=$(printf '%s' "$line" | grep -oE "$email" | grep -vE '(noreply|no-reply)@|@users\.noreply\.github\.com$|@example\.(com|org|net)$')
+  [ -n "$bad" ] && echo "$line"
+done)
+
+if [ -n "$hits" ]; then
+  echo "pre-commit: possible private data in staged changes:" >&2
+  printf '%s\n' "$hits" | sed 's/^/  /' >&2
+  echo "Move it to docs/local.md (gitignored), or mark an obvious fake with 'privacy:allow'." >&2
+  exit 1
+fi
+exit 0
