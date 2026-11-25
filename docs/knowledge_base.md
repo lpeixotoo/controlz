@@ -31,13 +31,26 @@
 
 ## Architecture
 ```
-SwiftUI menu-bar app (app/)          Rust core (core/, staticlib + uniffi)
-  MenuBarExtra + Settings   ──uniffi──▶  TvClient    ──WebSocket (LAN)──▶  LG webOS TV
-  @Observable models                    AcClient    ──local (TBD, T1.1)──▶ LG AC
-  Keychain (secrets)                    wol         ──UDP broadcast──▶    TV power-on
+SwiftUI menu-bar app (app/)                 Rust core (core/, staticlib via uniffi)
+  MenuBarExtra panel + Settings   ─uniffi─▶  AcController ─ local AC server (TLS/MQTT, route per T1.1) ◀── LG AC Wi-Fi module
+  @Observable @MainActor models   ◀─callbacks─ (state pushes)      TvClient ─ WebSocket (LAN) ──▶ LG webOS TV
+  Keychain (Security.framework)              wol ─ UDP broadcast ──▶ TV power-on
+                                            config (TOML) · ControlError · one tokio runtime
+controlz CLI (cli/) ── links controlz_core directly (no FFI), same config file + Keychain service
 ```
-- Rust owns every protocol; Swift owns UI, settings and secrets.
-- uniffi generates Swift bindings; async Rust functions become Swift `async throws`.
+- **Ownership:** Rust owns every device protocol, the AC server, config-file I/O and the domain types. Swift owns UI, the Keychain on the app side, and app lifecycle. The CLI is a thin Rust front-end over the same core, used to verify each protocol on real hardware before any UI uses it.
+- **Repo layout (target):**
+  - `Cargo.toml` workspace (`resolver = "3"`, shared `[workspace.package]`, `[workspace.dependencies]`, `[workspace.lints]`)
+  - `core/src/`: `lib.rs`, `error.rs` (`ControlError`), `runtime.rs`, `ffi.rs` (uniffi exports), `ac/` (route-specific, shaped by T1.1), `webos/` (`transport`, `pairing`, `manifest`, `commands`, `apps`, `pointer`), `wol.rs`, `discovery.rs`; integration tests in `core/tests/` with in-process mock peers.
+  - `cli/src/`: `main.rs` (clap), `config.rs`, `secrets.rs`, `ac.rs`, `tv.rs`.
+  - `app/`: SwiftPM package (`Package.swift`, `Sources/Controlz/…`, `Tests/ControlzTests/`), `Generated/` (gitignored uniffi output).
+  - `scripts/`: `check.sh` (all quality gates), `build-core.sh`, `bundle-app.sh`.
+- **Async + threading:** the core owns one multi-thread tokio runtime (`OnceLock`). uniffi async exports (`#[uniffi::export(async_runtime = "tokio")]`) surface as Swift `async throws`. Long-lived things are uniffi Objects (`Arc`): `AcController`, `TvClient`. State changes are pushed to Swift through a foreign-implemented callback trait (e.g. `AcObserver::on_state`), which Swift hops onto `@MainActor` models.
+- **Errors:** one `ControlError` enum (`thiserror` + `uniffi::Error`) with user-presentable messages. Secrets (TV client-key, any AC credentials) never appear in errors, `Debug` output or logs (`Secret` newtype with redacted `Debug`).
+- **Config + secrets (D10):** non-secret config in `~/Library/Application Support/Controlz/config.toml` (read/written by the core for both CLI and app). Secrets in the Keychain under one service name (set in T0.3), accessed from Rust via `security-framework` (CLI) and from Swift via Security.framework (app).
+- **AC server (if the local-cloud route wins, D12):** runs inside the app process (and `controlz ac serve` for the CLI), only while it is running. Listens on the ports the AC module expects (e.g. 443). Unprivileged processes **can bind port 443 on macOS 26** (tested 2026-11-25, uid 501). Details from T1.1.
+- **Logging:** `tracing` in Rust (CLI: `tracing-subscriber`, `-v` flags), `os.Logger` in Swift; never log secrets.
+- **Testing strategy:** unit tests next to the code; protocol tests against in-process mock peers (a fake webOS WebSocket server, a fake AC module client); `insta` snapshots for wire messages; fixtures use fake values only (privacy hook). Swift unit tests (Swift Testing) target view models against a fake core protocol; UI is verified by designer screenshot review.
 
 ## TV / webOS protocol
 Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.com/home-assistant-libs/aiowebostv ; Rust reference: https://github.com/Zakarialabib/tv-rs
@@ -121,14 +134,40 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - **D9** · 2026-11-25 · Cargo workspace with `core` (library, `controlz_core`) and `cli` (binary `controlz`) · keeps CLI-only deps (clap) out of the library shipped in the app · status: active
 - **D10** · 2026-11-25 · Secrets (TV client-key) in the macOS Keychain under one service shared by CLI and app; non-secret device config (TV IP/MAC) in `~/Library/Application Support/Controlz/` · pair once from the CLI, the app reuses it; nothing private in the repo · status: active
 - **D12** · 2026-11-25 · The local AC server (stand-in for LG's cloud) runs on this Mac · user choice; app control of the AC only while the Mac is awake is acceptable because the IR remote always works · status: active
+- **D13** · 2026-11-25 · Standard tooling: rustfmt, clippy (workspace lints, pedantic warn), cargo-nextest, cargo-deny, cargo-machete, insta; swift-format, SwiftLint, Swift Testing, Swift 6 strict concurrency; one `scripts/check.sh` gate; GitHub Actions CI + Dependabot (see Tooling) · community-standard, maintained tools; cargo-deny's license check also guards the GPL boundary · status: active
 - **D11** · 2026-11-25 · Build the AC end to end first (choose local route → core + CLI → Swift bridge → app); TV follows · user priority · status: active
 
 ## Conventions
 - Cargo workspace at the repo root: `core/` (crate `controlz_core`) and `cli/` (binary `controlz`) (D9). Swift package in `app/`.
 - Every device protocol is verified against the real device from the `controlz` CLI before UI work uses it.
 - Generic standards: `.claude/skills/rust-standards`, `.claude/skills/swift-shell`, `.claude/skills/macos-design`. Project-specific overrides go here.
+- **Tasks carry an `approach` line** in `docs/plan.md` with the intended technical design; implementers may deviate with a reason in their report.
+
+## Tooling (D13)
+Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
+- **Rust**
+  - Toolchain via rustup, pinned in `rust-toolchain.toml` with `rustfmt` + `clippy` components. Edition 2024.
+  - `rustfmt` (default style + `rustfmt.toml` only if needed).
+  - `clippy` with `[workspace.lints]`: `clippy::all` = deny, `clippy::pedantic` = warn (noisy lints allowed explicitly with a comment), `rust.unsafe_code` = deny (the uniffi scaffolding is exempt if it needs it), `rust.missing_debug_implementations` = warn. CI runs clippy with `-D warnings`.
+  - **cargo-nextest** 0.9.x as the test runner (+ `cargo test --doc` for doctests).
+  - **cargo-deny** 0.22.x: RustSec advisories, license allow-list (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, MPL-2.0; **no GPL** — keeps any rethink-derived work clean-room), banned/duplicate crates, allowed sources.
+  - **cargo-machete** 0.10.x: unused dependencies.
+  - **insta** 1.x: snapshot tests for protocol messages (`cargo insta review`).
+  - **cargo-llvm-cov** 0.9.x: coverage report on demand (not a gate).
+- **Swift**
+  - Swift 6 language mode (complete strict concurrency), warnings as errors in CI.
+  - **swift-format** (Apple; bundled with Xcode at `xcrun swift-format`, no install): formatting + `lint --strict`, config in `.swift-format`.
+  - **SwiftLint** 0.65.x (Homebrew): extra lint rules; formatting-related rules disabled so it doesn't fight swift-format. Config `.swiftlint.yml`.
+  - **Swift Testing** (`import Testing`) for unit tests, run with `swift test`.
+- **Shared**
+  - `scripts/check.sh` is the single local + CI gate: fmt check, clippy, nextest, doctests, cargo-deny, cargo-machete; plus swift-format lint, SwiftLint, `swift build`, `swift test` once `app/` exists.
+  - `.editorconfig` for whitespace basics.
+  - Git hooks: `.githooks/pre-commit` keeps the privacy check and adds a fast `cargo fmt --check` (no clippy/tests, to stay fast).
+  - **CI:** GitHub Actions on a macOS runner (repo is public → free), actions pinned by commit SHA, `permissions: contents: read`, Rust cache; runs `scripts/check.sh`. **Dependabot** weekly for Cargo and GitHub Actions.
+- Considered, not adopted: SwiftFormat (nicklockwood) — swift-format is bundled and sufficient; cargo-udeps — needs nightly, cargo-machete covers it; cargo-audit — cargo-deny covers advisories.
 
 ## Gotchas
+- An app that **listens** for connections (the AC server) triggers the macOS application-firewall "accept incoming connections" prompt when the firewall is on. Ad-hoc signed builds change identity every build → the prompt can repeat during development. Stable signing (T7.3) fixes it.
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
 - `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
 - The TV client-key is a secret: never in code, fixtures, logs or docs.
