@@ -8,12 +8,10 @@
 
 ## Open questions
 - [ ] OK to install `rustup`? Homebrew cargo 1.85 is likely too old — needed by T0.1
-- [ ] Can the router override DNS for one hostname (or can we run our own DNS)? — needed by T1.1
-- [ ] OK that the AC is only controllable while a local server runs (the Mac or an always-on box)? — needed by T1.1
-- [ ] Did you put the AC into Wi-Fi setup mode, or did it fall back to it on its own? — needed by T1.1
-- [ ] Model printed on the AC's original IR remote (often AKB…) — needed by T1.1
-- [ ] Is AC state readback a must, or is send-only (IR) OK? Is buying an IR blaster (~US$25–35) OK? — needed by T1.1
-- [ ] Does the AC show in the ThinQ/Alexa app via Matter or only via the LG skill? — needed by T1.1
+- [ ] Router: model, admin access, custom DNS entry or DHCP DNS server setting? — needed by T1.1
+- [ ] OK for the Mac to join the AC's `LG…` setup network briefly to read the module type (ThinQ1/2)? — needed by T1.1
+- [ ] Is send-only IR acceptable as a fallback; is buying an IR blaster OK? — needed by T1.1
+- [ ] Does the AC show in ThinQ/Alexa via Matter? (low priority) — needed by T1.1
 
 ---
 
@@ -404,3 +402,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · kb: AC model S4NQ09WA51A (cooling-only, LCW-003 Wi-Fi, ~2020), Matter nodes are Amazon devices, D11 supersedes D5 · user photo + LAN scan + user priority
 - 2026-11-25 · plan reordered AC first (D11): AC research → T1.1; bridge/design/app retargeted to AC; TV core → T5.1–T5.6 + new T5.7 (TV uniffi); TV app → T6.1–T6.3 (T6.1 new); later → T7.x. IDs renumbered (nothing started) · user request
 - 2026-11-25 · kb: AC is in SoftAP setup mode (not on home Wi-Fi); added `rethink` local-cloud route; T1.1 acceptance + open questions updated · user observation + rethink README/wiki
+- 2026-11-25 · kb: remote AKB75215401; setup mode user-initiated; server-dependent AC control accepted (IR remote always works); Home network section (DNS facts); stale T5.1/T6.1 refs fixed · user answers + DNS probe
