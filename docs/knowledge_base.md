@@ -146,7 +146,7 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 ## Tooling (D13)
 Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
 - **Rust**
-  - Toolchain via rustup, pinned in `rust-toolchain.toml` with `rustfmt` + `clippy` components. Edition 2024.
+  - Toolchain via rustup, pinned in `rust-toolchain.toml` with `rustfmt` + `clippy` components. Edition 2024. The pin must satisfy the MSRV of every core dependency (recorded under Environment; new libraries add theirs when introduced).
   - `rustfmt` (default style + `rustfmt.toml` only if needed).
   - `clippy` with `[workspace.lints]`: `clippy::all` = deny, `clippy::pedantic` = warn (noisy lints allowed explicitly with a comment), `rust.unsafe_code` = deny (the uniffi scaffolding is exempt if it needs it), `rust.missing_debug_implementations` = warn. CI runs clippy with `-D warnings`.
   - **cargo-nextest** 0.9.x as the test runner (+ `cargo test --doc` for doctests).

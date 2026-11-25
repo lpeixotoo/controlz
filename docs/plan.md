@@ -27,7 +27,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - acceptance:
   - [ ] rustup stable installed and pinned in `rust-toolchain.toml`
   - [ ] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
-  - [ ] MSRVs of uniffi and tokio-tungstenite recorded in the knowledge base (Environment)
+  - [ ] MSRV of every core dependency recorded in the knowledge base (Environment); the pinned toolchain satisfies all of them
 - notes: rustup install approved by the user (2026-11-25)
 
 ### T0.2 — Workspace + make core/ compile
@@ -107,6 +107,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-
   - [ ] Covers the IR route: LG AC IR protocol support, recommended blaster and how it's driven locally (e.g. Broadlink protocol)
   - [ ] For the rethink route, picks a DNS strategy that fits the router (KB: Home network): own hostname via public wildcard DNS (ThinQ2 only, no router change) vs own resolver + router "specific DNS server" (whole-home DNS dependency); with the server on the Mac (D12)
   - [ ] Compares routes on effort, extra hardware, two-way state and macOS feasibility; ends with a recommendation and a proposed task list — no product code
+  - [ ] Lists the Rust libraries the chosen route needs (e.g. TLS, MQTT) with their MSRVs, added to the knowledge base
 - notes: research only; user should first create DHCP reservations for the TV, the AC and the server host. Needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
 
 ## P2 — Swift bridge
@@ -475,3 +476,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · kb: router capabilities (DHCP DNS option, reservations, no host override); Local Network permission gotcha; T1.1 acceptance adds DNS strategy + server host; router identifiers intentionally not recorded · user screenshots
 - 2026-11-25 · kb: D12 AC server on the Mac; router DNS passes LAN-resolving public names (no router change for ThinQ2); rustup approved; open questions closed · user answers + dig test
 - 2026-11-25 · added T0.4 (Rust tooling), T0.5 (CI + Dependabot), T4.6 (Swift tooling); T4.2 deps + T4.6, T2.1 deps + T0.4; `approach` line on every task; KB Architecture + Tooling (D13) · user asked for standard tooling and more technical detail
+- 2026-11-25 · T0.1: record MSRV of every core dependency (not just uniffi/tokio-tungstenite); T1.1: list the route's libraries + MSRVs · AC-first means the AC server's libraries may set the minimum toolchain
