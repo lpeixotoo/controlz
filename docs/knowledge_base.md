@@ -24,7 +24,7 @@
   - Bluetooth is not a control channel for the TV (remote/audio only); LAN WebSocket is.
 - **AC:** LG split, indoor unit **S4NQ09WA51A** — cooling only (heating N/A), 9,000 BTU/h (2,638 W nominal; 2,010–10,000 BTU/h range), 220 V 1φ 60 Hz, R410A, built-in Wi-Fi module **LCW-003**, made in Manaus; label date code suggests **Sept 2020**. Serial and part numbers → `docs/local.md`. (source: indoor-unit label photo, user, 2026-11-25)
   - Registered in the LG ThinQ app; account country BR (user, 2026-11-25). ThinQ is not used (D4). Bluetooth on LG ACs is only used by the ThinQ app for Wi-Fi provisioning.
-  - **Not visible on the Mac's subnet** in ARP/ping sweeps (2026-11-25): it may be on another SSID/subnet, powered off, or not answering ping. IP unknown.
+  - **Not visible on the Mac's subnet** in ARP/ping sweeps (2026-11-25). The user then saw it broadcasting its own **`LG…` Wi-Fi network** (SoftAP setup mode, user 2026-11-25) → it is currently **not joined to the home Wi-Fi**.
 - The two commissioned Matter nodes (`_matter._tcp`) on the LAN are **Amazon devices** (MAC vendor Amazon), not the AC. (corrected 2026-11-25: was "unknown devices"). No `_matterc._udp` (commissionable) devices seen.
 
 ## Architecture
@@ -57,7 +57,12 @@ Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.c
 - **IR blaster (local, one-way):** a Wi-Fi IR blaster (e.g. Broadlink RM4 mini, local UDP protocol, see `python-broadlink`) replays the AC remote's codes. Works with any model; no state readback (Controlz keeps its own assumed state). Needs extra hardware.
 - **Not available:** a documented local Wi-Fi API on LG ACs; Bluetooth control.
 - **For S4NQ09WA51A (2020, LCW-003 module): Matter support is unlikely** — Matter 1.0 shipped in late 2022, after this unit. Unverified; T1.1 confirms.
-- **Possible third route (unverified):** community ESP32/ESPHome projects that replace or tap an LG AC's Wi-Fi module / indoor-unit serial bus for local two-way control. Hardware modification of a 220 V appliance (warranty and safety risk). T1.1 checks whether any project supports this model.
+- **Local ThinQ cloud replacement — `rethink` (most promising, partly verified):** https://github.com/anszom/rethink (GPL-2.0, ~400★, active Nov 2026). Source: its README, wiki and `rethink-setup.ts`, read 2026-11-25.
+  - How: while the AC is in SoftAP mode, a computer joins the `LG…` network and talks TLS to port 5500 on the module's fixed SoftAP gateway address (LG default, listed in `rethink-setup.ts` usage text). ThinQ1 modules: XML `mTosp` messages (`deviceinfo`, then `apinfo` with base64 SSID/password and a fake `regionalCode`). ThinQ2 modules: JSON `setDeviceInit` … plus an RSA public key. The AC then joins the home Wi-Fi and connects to a **local server pretending to be LG's cloud** (MQTT over TLS) instead of LG.
+  - Two-way: state readback and control, no extra hardware, no cloud. Wall-mounted LG ACs (ThinQ model `RAC_056905_WW`, "DualCool family IDUs") have its highest support level; whether S4NQ09WA51A reports that model, and whether LCW-003 is ThinQ1 or ThinQ2, is **unverified** (the SoftAP `deviceinfo` reply would tell).
+  - Requirements: an always-on server on the LAN (rethink is Node.js; listens on 443), **DNS on the LAN redirecting the AC's cloud hostname to that server** (the Wi-Fi module has no mDNS), its own MQTT broker. After provisioning, the AC no longer talks to the official ThinQ app (re-provisioning with the ThinQ app undoes it).
+  - For Controlz: either run rethink as a separate service and talk MQTT to it, or reimplement the needed server side in the Rust core (clean-room from the wiki; copying rethink code would pull in GPL-2.0). To decide in T1.1.
+- **Possible fourth route (unverified):** community ESP32/ESPHome projects that replace or tap an LG AC's Wi-Fi module / indoor-unit serial bus for local two-way control. Hardware modification of a 220 V appliance (warranty and safety risk). T1.1 checks whether any project supports this model.
 
 ## AC / ThinQ Connect API (reference only — not used, see D4)
 Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/thinq-connect/pythinqconnect ; PAT docs — https://thinq.developer.lge.com/en/cloud/docs/thinq-connect/PAT-en/
@@ -119,7 +124,9 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 See `docs/plan.md`. AC first (D11): P0 Setup · P1 AC route + core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (AC) · P5 TV core + CLI · P6 Mac app (TV) · P7 Later.
 
 ## Open questions
-- Where is the AC on the network (router client list: SSID/band, IP)? — needed by T1.1
+- Can the home router override DNS for a hostname (or can we run our own DNS, e.g. Pi-hole)? Router MAC vendor suggests an ISP-supplied box. — needed by T1.1
+- Is it OK that the AC is only controllable while a local server runs (the Mac, or an always-on box)? — needed by T1.1
+- Did the user put the AC into Wi-Fi setup mode, or did it fall back to it on its own? — needed by T1.1
 - Model printed on the AC's original IR remote (often AKB…) — needed by T1.1
 - Is reading AC state back (current temperature, on/off) a must, or is send-only (IR) acceptable? Is buying an IR blaster (~US$25–35) OK? — needed by T1.1
 - Does the ThinQ app (device settings) or the Alexa app show this AC, and via Matter or the LG skill? — needed by T1.1
@@ -136,3 +143,4 @@ See `docs/plan.md`. AC first (D11): P0 Setup · P1 AC route + core + CLI · P2 S
 - LG ThinQ Connect country→region table — https://github.com/thinq-connect/pythinqconnect/blob/main/thinqconnect/country.py (BR → aic; checked 2026-11-25)
 - python-broadlink (IR blaster local protocol) — https://github.com/mjg59/python-broadlink
 - Matter.framework — https://developer.apple.com/documentation/matter
+- rethink (local ThinQ cloud replacement) — https://github.com/anszom/rethink · wiki https://github.com/anszom/rethink/wiki

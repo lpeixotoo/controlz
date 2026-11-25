@@ -8,7 +8,9 @@
 
 ## Open questions
 - [ ] OK to install `rustup`? Homebrew cargo 1.85 is likely too old — needed by T0.1
-- [ ] Where is the AC on the network (router client list: SSID/band, IP)? — needed by T1.1
+- [ ] Can the router override DNS for one hostname (or can we run our own DNS)? — needed by T1.1
+- [ ] OK that the AC is only controllable while a local server runs (the Mac or an always-on box)? — needed by T1.1
+- [ ] Did you put the AC into Wi-Fi setup mode, or did it fall back to it on its own? — needed by T1.1
 - [ ] Model printed on the AC's original IR remote (often AKB…) — needed by T1.1
 - [ ] Is AC state readback a must, or is send-only (IR) OK? Is buying an IR blaster (~US$25–35) OK? — needed by T1.1
 - [ ] Does the AC show in the ThinQ/Alexa app via Matter or only via the LG skill? — needed by T1.1
@@ -71,7 +73,8 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-
 - design: -
 - acceptance:
   - [ ] Confirms with sources whether S4NQ09WA51A / its LCW-003 module supports Matter (now or via firmware)
-  - [ ] Checks community local-control projects (ESP32/ESPHome module replacement or serial tap) for this model; notes hardware, safety and warranty impact
+  - [ ] Evaluates the `rethink` local-cloud route in depth: ThinQ1 vs ThinQ2 for LCW-003, model support, DNS/server requirements, and run-rethink-as-a-service vs clean-room Rust reimplementation (GPL-2.0 implications)
+  - [ ] Checks ESP32/ESPHome module-replacement projects for this model; notes hardware, safety and warranty impact
   - [ ] Covers the IR route: LG AC IR protocol support, recommended blaster and how it's driven locally (e.g. Broadlink protocol)
   - [ ] Compares routes on effort, extra hardware, two-way state and macOS feasibility; ends with a recommendation and a proposed task list — no product code
 - notes: research only; needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
@@ -400,3 +403,4 @@ Goal: nice-to-haves.
 - 2026-11-25 — D2 AC part superseded by D4 (local-only, no ThinQ); plan reordered TV end to end first (D5) — user decision
 - 2026-11-25 · kb: AC model S4NQ09WA51A (cooling-only, LCW-003 Wi-Fi, ~2020), Matter nodes are Amazon devices, D11 supersedes D5 · user photo + LAN scan + user priority
 - 2026-11-25 · plan reordered AC first (D11): AC research → T1.1; bridge/design/app retargeted to AC; TV core → T5.1–T5.6 + new T5.7 (TV uniffi); TV app → T6.1–T6.3 (T6.1 new); later → T7.x. IDs renumbered (nothing started) · user request
+- 2026-11-25 · kb: AC is in SoftAP setup mode (not on home Wi-Fi); added `rethink` local-cloud route; T1.1 acceptance + open questions updated · user observation + rethink README/wiki
