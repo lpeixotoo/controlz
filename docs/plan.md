@@ -463,6 +463,7 @@ Goal: nice-to-haves.
 ## Session log
 <!-- one line per finished task/session: date · task · outcome · commit -->
 - 2026-11-25 · bootstrap · plan + knowledge base written; TV found on the LAN · -
+- 2026-11-25 · bootstrap · plan v4 approved by the user (incl. D9, D10) · -
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -477,3 +478,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · kb: D12 AC server on the Mac; router DNS passes LAN-resolving public names (no router change for ThinQ2); rustup approved; open questions closed · user answers + dig test
 - 2026-11-25 · added T0.4 (Rust tooling), T0.5 (CI + Dependabot), T4.6 (Swift tooling); T4.2 deps + T4.6, T2.1 deps + T0.4; `approach` line on every task; KB Architecture + Tooling (D13) · user asked for standard tooling and more technical detail
 - 2026-11-25 · T0.1: record MSRV of every core dependency (not just uniffi/tokio-tungstenite); T1.1: list the route's libraries + MSRVs · AC-first means the AC server's libraries may set the minimum toolchain
+- 2026-11-25 · plan approved by the user (D9 and D10 confirmed) · bootstrap complete
