@@ -22,8 +22,10 @@
   - Found by LAN sweep: ports 3000 (ws, answers "Hello world") and 3001 (wss) open; also 1926, 9080 (Netflix NRDP), 18181, 36866. MAC vendor prefix is LG Innotek. IP and MAC → `docs/local.md`.
   - "Turn on via Wi-Fi" is **enabled** (user, 2026-11-25), so Wake-on-LAN should work.
   - Bluetooth is not a control channel for the TV (remote/audio only); LAN WebSocket is.
-- **AC:** LG, model **unknown**. Registered in the LG ThinQ app; account country BR (user, 2026-11-25). ThinQ is not used (D4). Bluetooth on LG ACs is only used by the ThinQ app for Wi-Fi provisioning.
-- Two commissioned Matter nodes (`_matter._tcp`) are on the LAN; what they are is unknown (identifiers in `docs/local.md`). No `_matterc._udp` (commissionable) devices seen.
+- **AC:** LG split, indoor unit **S4NQ09WA51A** — cooling only (heating N/A), 9,000 BTU/h (2,638 W nominal; 2,010–10,000 BTU/h range), 220 V 1φ 60 Hz, R410A, built-in Wi-Fi module **LCW-003**, made in Manaus; label date code suggests **Sept 2020**. Serial and part numbers → `docs/local.md`. (source: indoor-unit label photo, user, 2026-11-25)
+  - Registered in the LG ThinQ app; account country BR (user, 2026-11-25). ThinQ is not used (D4). Bluetooth on LG ACs is only used by the ThinQ app for Wi-Fi provisioning.
+  - **Not visible on the Mac's subnet** in ARP/ping sweeps (2026-11-25): it may be on another SSID/subnet, powered off, or not answering ping. IP unknown.
+- The two commissioned Matter nodes (`_matter._tcp`) on the LAN are **Amazon devices** (MAC vendor Amazon), not the AC. (corrected 2026-11-25: was "unknown devices"). No `_matterc._udp` (commissionable) devices seen.
 
 ## Architecture
 ```
@@ -54,6 +56,8 @@ Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.c
 - **Matter (local IP, two-way):** only some newer LG ACs ship Matter support — check the model. A Matter device can join several fabrics (multi-admin), so it could stay in ThinQ/Apple Home and also be commissioned by Controlz. On macOS, candidates are Apple's `Matter.framework` (`MTRDeviceController`, own fabric) or HomeKit (available to Mac Catalyst apps only); a Rust controller (`rs-matter`) is less mature. **All unverified — T5.1 confirms.**
 - **IR blaster (local, one-way):** a Wi-Fi IR blaster (e.g. Broadlink RM4 mini, local UDP protocol, see `python-broadlink`) replays the AC remote's codes. Works with any model; no state readback (Controlz keeps its own assumed state). Needs extra hardware.
 - **Not available:** a documented local Wi-Fi API on LG ACs; Bluetooth control.
+- **For S4NQ09WA51A (2020, LCW-003 module): Matter support is unlikely** — Matter 1.0 shipped in late 2022, after this unit. Unverified; T1.1 confirms.
+- **Possible third route (unverified):** community ESP32/ESPHome projects that replace or tap an LG AC's Wi-Fi module / indoor-unit serial bus for local two-way control. Hardware modification of a 220 V appliance (warranty and safety risk). T1.1 checks whether any project supports this model.
 
 ## AC / ThinQ Connect API (reference only — not used, see D4)
 Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/thinq-connect/pythinqconnect ; PAT docs — https://thinq.developer.lge.com/en/cloud/docs/thinq-connect/PAT-en/
@@ -92,12 +96,13 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - **D2** · 2026-11-25 · TV controlled locally over webOS SSAP; AC through the official ThinQ Connect cloud API with a PAT · LG ACs have no local API; ThinQ Connect is LG's official, documented route · status: TV part active; AC part superseded by D4
 - **D3** · 2026-11-25 · Development workflow: coordinator main-thread agent + implementer/reviewer/designer subagents, `docs/plan.md` + `docs/knowledge_base.md` as the sources of truth, one task per cycle · status: active
 - **D4** · 2026-11-25 · Every device is controlled locally; no cloud services (LG ThinQ rejected). AC route (Matter vs IR blaster) is chosen in T5.1 · user wants local-only control; accepts that AC support depends on the model (Matter) or extra hardware (IR) · status: active
-- **D5** · 2026-11-25 · Build the TV end to end first (core → CLI → Swift bridge → app); AC work starts after · TV has a known local protocol and is already reachable; AC route still open · status: active
+- **D5** · 2026-11-25 · Build the TV end to end first (core → CLI → Swift bridge → app); AC work starts after · TV has a known local protocol and is already reachable; AC route still open · status: superseded by D11
 - **D6** · 2026-11-25 · Minimum macOS 26 · this Mac runs 26.5; use current SwiftUI APIs without fallbacks · status: active
 - **D7** · 2026-11-25 · Keep the existing partial `core/` code as a starting point; T0.2 reviews it and makes it compile · Wake-on-LAN + tests are reusable · status: active
 - **D8** · 2026-11-25 · One git commit per finished task; designer reviews screenshots after UI tasks · small reviewable history; catch drift from specs early · status: active
 - **D9** · 2026-11-25 · Cargo workspace with `core` (library, `controlz_core`) and `cli` (binary `controlz`) · keeps CLI-only deps (clap) out of the library shipped in the app · status: active
 - **D10** · 2026-11-25 · Secrets (TV client-key) in the macOS Keychain under one service shared by CLI and app; non-secret device config (TV IP/MAC) in `~/Library/Application Support/Controlz/` · pair once from the CLI, the app reuses it; nothing private in the repo · status: active
+- **D11** · 2026-11-25 · Build the AC end to end first (choose local route → core + CLI → Swift bridge → app); TV follows · user priority · status: active
 
 ## Conventions
 - Cargo workspace at the repo root: `core/` (crate `controlz_core`) and `cli/` (binary `controlz`) (D9). Swift package in `app/`.
@@ -111,10 +116,13 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - The TV gets its IP by DHCP; suggest a router reservation so the configured IP stays valid (until SSDP discovery, T6.1).
 
 ## Roadmap sketch
-See `docs/plan.md`. Phases: P0 Setup · P1 TV core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (TV) · P5 AC (local, route decided in T5.1) · P6 Later (SSDP discovery, launch at login, signing).
+See `docs/plan.md`. AC first (D11): P0 Setup · P1 AC route + core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (AC) · P5 TV core + CLI · P6 Mac app (TV) · P7 Later.
 
 ## Open questions
-- AC model number — needed by T5.1.
+- Where is the AC on the network (router client list: SSID/band, IP)? — needed by T1.1
+- Model printed on the AC's original IR remote (often AKB…) — needed by T1.1
+- Is reading AC state back (current temperature, on/off) a must, or is send-only (IR) acceptable? Is buying an IR blaster (~US$25–35) OK? — needed by T1.1
+- Does the ThinQ app (device settings) or the Alexa app show this AC, and via Matter or the LG skill? — needed by T1.1
 - OK to install `rustup` (Homebrew cargo 1.85 likely too old) — needed by T0.1.
 
 ## Sources
