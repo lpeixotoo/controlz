@@ -1,0 +1,18 @@
+# Rust
+core/target/
+
+# Swift
+app/.build/
+app/.swiftpm/
+*.xcuserstate
+
+# Generated uniffi bindings and build products
+app/Generated/
+build/
+*.app
+
+# macOS
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json

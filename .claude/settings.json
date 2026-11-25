@@ -1,0 +1,30 @@
+{
+  "agent": "coordinator",
+  "permissions": {
+    "allow": [
+      "Bash(scripts/plan-status.sh*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo check*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo test*)",
+      "Bash(cargo build*)",
+      "Bash(swift build*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/plan-status.sh --short"
+          }
+        ]
+      }
+    ]
+  }
+}
