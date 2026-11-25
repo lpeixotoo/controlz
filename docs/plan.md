@@ -1,0 +1,341 @@
+# Controlz — Plan
+
+> Source of truth for *what to do*. Only the coordinator edits this file.
+> Task format: see `.claude/skills/bootstrap/templates/task.md`. Facts and decisions live in `knowledge_base.md`.
+
+## Status legend
+`todo` → `in_progress` → `in_review` → `done` · `blocked` (reason in notes) · `reopened` (link to B#/correction)
+
+## Open questions
+- [ ] OK to install `rustup`? Homebrew cargo 1.85 is likely too old — needed by T0.1
+- [ ] AC model number (sticker on the indoor unit, or ThinQ app → AC → Settings → Product information) — needed by T5.1
+
+---
+
+## P0 — Setup
+Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
+
+### T0.1 — Rust toolchain via rustup
+- status: todo
+- deps: -
+- owner: implementer
+- files: rust-toolchain.toml, core/Cargo.toml
+- kb: Environment; Gotchas
+- design: -
+- acceptance:
+  - [ ] rustup stable installed and pinned in `rust-toolchain.toml`
+  - [ ] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
+  - [ ] MSRVs of uniffi and tokio-tungstenite recorded in the knowledge base (Environment)
+- notes: needs the user's OK to install rustup
+
+### T0.2 — Workspace + make core/ compile
+- status: todo
+- deps: T0.1
+- owner: implementer
+- files: Cargo.toml, core/Cargo.toml, core/src/lib.rs, core/src/wol.rs, core/src/webos.rs, scripts/check.sh, .gitignore
+- kb: Conventions; Decisions (D7, D9); Gotchas
+- design: -
+- acceptance:
+  - [ ] Root Cargo workspace with members `core` and `cli` (cli may be a stub `main`); `.gitignore` covers the root `target/`
+  - [ ] `lib.rs` declares only modules that exist (`webos` stub, `wol`); the `thinq` module is removed
+  - [ ] `scripts/check.sh` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, all green
+  - [ ] Existing Wake-on-LAN tests pass
+- notes:
+
+### T0.3 — CLI skeleton, config and Keychain secrets
+- status: todo
+- deps: T0.2
+- owner: implementer
+- files: cli/Cargo.toml, cli/src/main.rs, cli/src/config.rs, cli/src/secrets.rs
+- kb: Decisions (D9, D10); Conventions; Gotchas
+- design: -
+- acceptance:
+  - [ ] `controlz --help` lists a `tv` subcommand group and a `config` command
+  - [ ] `controlz config set tv.ip|tv.mac <value>` writes `~/Library/Application Support/Controlz/config.toml`; nothing is read from the repo
+  - [ ] Secrets are read/written in the macOS Keychain under one service name recorded in the knowledge base
+  - [ ] A test proves secret values never appear in `Debug` output or logs
+- notes:
+
+## P1 — TV core + CLI
+Goal: full TV control over the LAN, verified on the user's OLED C1 through the CLI.
+
+### T1.1 — Turn the TV on (Wake-on-LAN)
+- status: todo
+- deps: T0.3
+- owner: implementer
+- files: core/src/wol.rs, cli/src/tv.rs
+- kb: TV / webOS protocol (Power on); Devices
+- design: -
+- acceptance:
+  - [ ] `controlz tv on` sends the magic packet to the configured MAC on UDP broadcast ports 9 and 7
+  - [ ] MAC parsing accepts `:` and `-` separators and rejects malformed input (tests, fake MACs only)
+  - [ ] Returns immediately without waiting for the TV
+- notes: user verifies the TV wakes from standby
+
+### T1.2 — webOS connection
+- status: todo
+- deps: T0.2
+- owner: implementer
+- files: core/src/webos/mod.rs, core/src/webos/transport.rs, core/tests/webos_transport.rs
+- kb: TV / webOS protocol (Transport, Requests)
+- design: -
+- acceptance:
+  - [ ] Tries `wss://<ip>:3001` (self-signed cert accepted for this connection only), falls back to `ws://<ip>:3000`
+  - [ ] Remembers which transport worked for the next connect
+  - [ ] Requests are matched to responses by `id`, with a timeout
+  - [ ] Tested against an in-process mock WebSocket server
+- notes:
+
+### T1.3 — Pair with the TV
+- status: todo
+- deps: T1.2, T0.3
+- owner: implementer
+- files: core/src/webos/pairing.rs, core/src/webos/manifest.rs, cli/src/tv.rs
+- kb: TV / webOS protocol (Handshake, Registration, Manifest); Gotchas
+- design: -
+- acceptance:
+  - [ ] Requests `ssap://system/getSystemInfo` before `register`
+  - [ ] Handles the `PROMPT` response then `registered`, returning the client-key
+  - [ ] Retries once with the unsigned manifest if the signed one is rejected
+  - [ ] A stored key reconnects without a prompt; `controlz tv pair` saves the key to the Keychain (fixture tests for both paths)
+- notes: user must accept the pairing prompt on the TV. Manifest copied from aiowebostv (Apache-2.0) with attribution.
+
+### T1.4 — Volume, mute, power off, toast
+- status: todo
+- deps: T1.3
+- owner: implementer
+- files: core/src/webos/commands.rs, cli/src/tv.rs
+- kb: TV / webOS protocol (Endpoints, Power off)
+- design: -
+- acceptance:
+  - [ ] Get/set volume, volume up/down and mute
+  - [ ] Power off does not wait for a reply
+  - [ ] `controlz tv vol | mute | off | toast` work against the real TV
+  - [ ] Fixture tests for each request payload
+- notes: user confirms on the TV
+
+### T1.5 — Apps and inputs
+- status: todo
+- deps: T1.3
+- owner: implementer
+- files: core/src/webos/apps.rs, cli/src/tv.rs
+- kb: TV / webOS protocol (Endpoints)
+- design: -
+- acceptance:
+  - [ ] List and launch apps; show the foreground app
+  - [ ] List and switch external inputs
+  - [ ] Fixture tests for list parsing; `controlz tv apps | launch | inputs | input` work
+- notes: user confirms on the TV
+
+### T1.6 — Remote buttons and media keys
+- status: todo
+- deps: T1.3
+- owner: implementer
+- files: core/src/webos/pointer.rs, cli/src/tv.rs
+- kb: TV / webOS protocol (Buttons, Endpoints)
+- design: -
+- acceptance:
+  - [ ] Opens the pointer-input socket from `getPointerInputSocket`
+  - [ ] Sends D-pad, ENTER, BACK, HOME and MENU button frames
+  - [ ] Play, pause, stop, rewind, fast-forward via `media.controls`
+  - [ ] `controlz tv key <name>` works against the real TV
+- notes: user confirms on the TV
+
+## P2 — Swift bridge
+Goal: expose the Rust TV core to Swift with uniffi and a one-command build.
+
+### T2.1 — uniffi exports (TV)
+- status: todo
+- deps: T1.1, T1.4, T1.5, T1.6
+- owner: implementer
+- files: core/src/ffi.rs, core/src/lib.rs
+- kb: Architecture; Decisions (D1)
+- design: -
+- acceptance:
+  - [ ] TV and wake functions exported as Swift `async throws`
+  - [ ] One tokio runtime owned by the core
+  - [ ] Errors map to a single error enum with readable messages; client-key never included in error text
+- notes:
+
+### T2.2 — Core build script
+- status: todo
+- deps: T2.1
+- owner: implementer
+- files: scripts/build-core.sh
+- kb: Architecture; Environment
+- design: -
+- acceptance:
+  - [ ] Builds the arm64 release static library
+  - [ ] Generates Swift bindings and module map into `app/Generated/`
+  - [ ] Idempotent; usage recorded in the knowledge base
+- notes:
+
+## P3 — Design specs
+Goal: designer specs for the menu-bar panel, Settings and first-run setup.
+
+### T3.1 — Menu-bar panel spec
+- status: todo
+- deps: -
+- owner: designer
+- files: docs/design/panel.md
+- kb: Project; macOS platform
+- design: -
+- acceptance:
+  - [ ] TV section: power, volume/mute, input, apps, D-pad, media keys
+  - [ ] States: loading, TV off (with Turn On), unreachable, not paired
+  - [ ] Leaves a defined slot for a future AC section without designing it in detail
+- notes:
+
+### T3.2 — Settings and first-run spec
+- status: todo
+- deps: -
+- owner: designer
+- files: docs/design/settings.md
+- kb: Project; macOS platform; TV / webOS protocol (Registration)
+- design: -
+- acceptance:
+  - [ ] TV setup: enter IP/MAC, pairing flow including the on-TV prompt
+  - [ ] Explains the Local Network permission before macOS asks for it
+  - [ ] Settings layout for the TV (re-pair, forget TV)
+- notes:
+
+## P4 — Mac app (TV)
+Goal: the menu-bar app for the TV, built to the specs and reviewed by screenshot.
+
+### T4.1 — App skeleton and bundling
+- status: todo
+- deps: T2.2
+- owner: implementer
+- files: app/Package.swift, app/Sources/, app/Info.plist, scripts/bundle-app.sh
+- kb: macOS platform; Decisions (D6)
+- design: -
+- acceptance:
+  - [ ] `scripts/bundle-app.sh` builds a `.app` with `LSUIElement` and `NSLocalNetworkUsageDescription`
+  - [ ] Menu-bar icon opens a `MenuBarExtra` panel (window style), macOS 26 minimum
+  - [ ] Calls into the Rust core successfully
+- notes:
+
+### T4.2 — Settings and Keychain
+- status: todo
+- deps: T4.1, T3.2
+- owner: implementer
+- files: app/Sources/Settings/, app/Sources/Keychain.swift
+- kb: Decisions (D10); macOS platform
+- design: docs/design/settings.md
+- acceptance:
+  - [ ] Settings window per spec
+  - [ ] Shares the Keychain service and config file with the CLI
+  - [ ] No secret shown or logged after entry
+- notes:
+
+### T4.3 — First-run TV setup
+- status: todo
+- deps: T4.2
+- owner: implementer
+- files: app/Sources/Setup/
+- kb: TV / webOS protocol (Registration); macOS platform
+- design: docs/design/settings.md
+- acceptance:
+  - [ ] Guides TV setup and pairing end to end
+  - [ ] Shows a clear, actionable error for each failure (unreachable, rejected, no Local Network permission)
+  - [ ] Designer screenshot review passes
+- notes: user pairs the TV from the app
+
+### T4.4 — TV controls in the panel
+- status: todo
+- deps: T4.3, T3.1
+- owner: implementer
+- files: app/Sources/TV/
+- kb: TV / webOS protocol
+- design: docs/design/panel.md
+- acceptance:
+  - [ ] All TV controls from the spec work on the real TV
+  - [ ] TV-off state offers Turn On (Wake-on-LAN)
+  - [ ] Designer screenshot review passes
+- notes: user tries it on the TV
+
+### T4.5 — Error and offline states (TV)
+- status: todo
+- deps: T4.4
+- owner: implementer
+- files: app/Sources/
+- kb: TV / webOS protocol; macOS platform
+- design: docs/design/panel.md
+- acceptance:
+  - [ ] Unreachable, not paired and permission-denied states match the spec
+  - [ ] Reconnects when the TV or network comes back
+  - [ ] Designer screenshot review passes
+- notes:
+
+## P5 — AC (local)
+Goal: control the AC without any cloud service (D4). Tasks after T5.1 are planned once the route is chosen.
+
+### T5.1 — Choose a local AC route
+- status: todo
+- deps: -
+- owner: implementer
+- files: docs/knowledge_base.md
+- kb: AC — local control options; Devices; Decisions (D4)
+- design: -
+- acceptance:
+  - [ ] Confirms whether the user's AC model supports Matter, with sources
+  - [ ] Identifies (if possible) the two Matter nodes on the LAN
+  - [ ] Compares Matter (and how a macOS app would control it) vs an IR blaster: effort, hardware, two-way state
+  - [ ] Ends with a recommendation for the user to decide; no product code
+- notes: needs the AC model number. Research only. The coordinator then adds the AC tasks via plan-adjust.
+
+## P6 — Later
+Goal: nice-to-haves after the TV works end to end.
+
+### T6.1 — Find the TV automatically (SSDP)
+- status: todo
+- deps: T1.2
+- owner: implementer
+- files: core/src/discovery.rs, cli/src/tv.rs
+- kb: Devices; TV / webOS protocol
+- design: -
+- acceptance:
+  - [ ] SSDP search finds LG webOS TVs on the LAN
+  - [ ] Reads the model name from the UPnP description on port 1926
+- notes:
+
+### T6.2 — Launch at login
+- status: todo
+- deps: T4.1
+- owner: implementer
+- files: app/Sources/Settings/
+- kb: macOS platform
+- design: docs/design/settings.md
+- acceptance:
+  - [ ] Settings toggle using `SMAppService`
+  - [ ] State survives app restarts
+- notes:
+
+### T6.3 — Signing and notarization
+- status: todo
+- deps: T4.5
+- owner: implementer
+- files: scripts/bundle-app.sh
+- kb: macOS platform
+- design: -
+- acceptance:
+  - [ ] Signed with Developer ID and notarized
+  - [ ] Opens on another Mac without Gatekeeper warnings
+- notes: needs an Apple Developer account
+
+---
+
+## Bugs
+<!-- B# tasks use the same format, plus: severity (critical|major|minor), repro, affects (T#) -->
+
+---
+
+## Session log
+<!-- one line per finished task/session: date · task · outcome · commit -->
+- 2026-11-25 · bootstrap · plan + knowledge base written; TV found on the LAN · -
+
+## Change log
+<!-- one line per plan/knowledge-base change: date · what · why -->
+- 2026-11-25 — bootstrap — initial plan
+- 2026-11-25 — KB: TV model, AC/account facts, D4–D10, AC local options section; ThinQ section kept as reference only — interview answers + LAN scan
+- 2026-11-25 — D2 AC part superseded by D4 (local-only, no ThinQ); plan reordered TV end to end first (D5) — user decision

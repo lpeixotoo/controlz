@@ -1,31 +1,35 @@
 # Controlz — Knowledge Base
 
 > Source of truth for *what is true*. Add facts with a source. Supersede decisions instead of deleting them.
-> Status: **seeded from research on 2026-11-25, before /bootstrap.** Device details and workflow answers are still open.
+> Status: bootstrapped 2026-11-25.
 
 ## Project
-- **Goal:** a macOS menu-bar app that acts as a control center for the user's LG TV and LG air conditioner.
-- **Scope (v1):** TV power, volume/mute, input, apps, media keys, D-pad navigation; AC power, mode, target temperature, fan speed, current temperature.
-- **Non-goals (v1):** other brands, iOS, automations/schedules, Apple Home/Matter integration, App Store distribution.
+- **Goal:** a macOS menu-bar app that acts as a control center for the user's LG TV and LG air conditioner, **controlling every device locally — no cloud services** (D4).
+- **Scope (v1):** TV power, volume/mute, input, apps, media keys, D-pad navigation. AC (power, mode, target temperature, fan) follows once a local route is chosen (T5.1).
+- **Non-goals (v1):** other brands, iOS, automations/schedules, cloud APIs (LG ThinQ), App Store distribution.
 
 ## Environment
 - Machine: Apple Silicon Mac, macOS 26 (Darwin 25.5). (source: `uname`/`swift --version`, 2026-11-25)
 - Rust: `cargo 1.85.1` from Homebrew (`/opt/homebrew/bin/cargo`). **This may be too old for current crates** (uniffi, tokio-tungstenite, reqwest MSRVs move fast). P0 should check MSRVs and likely switch to `rustup` stable.
 - Swift 6.1, Xcode 16.3. No `xcodegen`/`tuist` installed.
+- **Minimum supported macOS: 26** (D6). This Mac runs macOS 26.5.2 (source: `sw_vers`, 2026-11-25).
 - `jq` available at `/usr/bin/jq` (used by hooks).
 
 ## Devices
 - **All appliances are LG** (source: user, 2026-11-25).
 - **Private details** (IPs, MACs, serials, ThinQ device IDs, account email) live in `docs/local.md`, which is gitignored. This repo is public: never copy them here, into the plan, fixtures or commits.
-- TV: model / year / webOS version — **unknown**. IP / MAC → `docs/local.md` (not yet recorded).
-- AC: model / ThinQ registration — **unknown**.
-- LG account country (selects the ThinQ region) — **unknown**.
+- **TV:** LG **OLED55C1PSA** (2021 C1 series, shipped with webOS 6.0). Source: UPnP description at `http://<tv>:1926/` (`friendlyName "[LG] webOS TV OLED55C1PSA"`, `Server: WebOS/4.0.0 UPnP/1.0`), 2026-11-25.
+  - Found by LAN sweep: ports 3000 (ws, answers "Hello world") and 3001 (wss) open; also 1926, 9080 (Netflix NRDP), 18181, 36866. MAC vendor prefix is LG Innotek. IP and MAC → `docs/local.md`.
+  - "Turn on via Wi-Fi" is **enabled** (user, 2026-11-25), so Wake-on-LAN should work.
+  - Bluetooth is not a control channel for the TV (remote/audio only); LAN WebSocket is.
+- **AC:** LG, model **unknown**. Registered in the LG ThinQ app; account country BR (user, 2026-11-25). ThinQ is not used (D4). Bluetooth on LG ACs is only used by the ThinQ app for Wi-Fi provisioning.
+- Two commissioned Matter nodes (`_matter._tcp`) are on the LAN; what they are is unknown (identifiers in `docs/local.md`). No `_matterc._udp` (commissionable) devices seen.
 
 ## Architecture
 ```
 SwiftUI menu-bar app (app/)          Rust core (core/, staticlib + uniffi)
   MenuBarExtra + Settings   ──uniffi──▶  TvClient    ──WebSocket (LAN)──▶  LG webOS TV
-  @Observable models                    ThinqClient ──HTTPS (cloud)───▶   LG ThinQ Connect API ─▶ AC
+  @Observable models                    AcClient    ──local (TBD, T5.1)──▶ LG AC (Matter or IR blaster)
   Keychain (secrets)                    wol         ──UDP broadcast──▶    TV power-on
 ```
 - Rust owns every protocol; Swift owns UI, settings and secrets.
@@ -46,7 +50,12 @@ Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.c
 - **Power on:** the socket is down when the TV is off → use Wake-on-LAN (magic packet to the TV's MAC, UDP broadcast ports 9/7). Requires the TV setting "Turn on via Wi-Fi" / "Mobile TV On".
 - **Power off:** `system/turnOff`; the response may never arrive while shutting down → don't wait for it.
 
-## AC / ThinQ Connect API
+## AC — local control options (to be decided in T5.1)
+- **Matter (local IP, two-way):** only some newer LG ACs ship Matter support — check the model. A Matter device can join several fabrics (multi-admin), so it could stay in ThinQ/Apple Home and also be commissioned by Controlz. On macOS, candidates are Apple's `Matter.framework` (`MTRDeviceController`, own fabric) or HomeKit (available to Mac Catalyst apps only); a Rust controller (`rs-matter`) is less mature. **All unverified — T5.1 confirms.**
+- **IR blaster (local, one-way):** a Wi-Fi IR blaster (e.g. Broadlink RM4 mini, local UDP protocol, see `python-broadlink`) replays the AC remote's codes. Works with any model; no state readback (Controlz keeps its own assumed state). Needs extra hardware.
+- **Not available:** a documented local Wi-Fi API on LG ACs; Bluetooth control.
+
+## AC / ThinQ Connect API (reference only — not used, see D4)
 Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/thinq-connect/pythinqconnect ; PAT docs — https://thinq.developer.lge.com/en/cloud/docs/thinq-connect/PAT-en/
 - **Cloud only.** There is no documented local API for LG ACs. Expect seconds of latency.
 - **Auth:** Personal Access Token created by the user at https://connect-pat.lgthinq.com (sign in with the ThinQ account → Add new token → choose scopes). Stored in Keychain.
@@ -80,34 +89,33 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 
 ## Decisions
 - **D1** · 2026-11-25 · Rust core + thin SwiftUI shell, bridged with uniffi · native look and a small menu-bar footprint for the UI, Rust for the protocol logic; pure-Rust AppKit (objc2) is too tedious, Tauri carries a WebView · status: active
-- **D2** · 2026-11-25 · TV controlled locally over webOS SSAP; AC through the official ThinQ Connect cloud API with a PAT · LG ACs have no local API; ThinQ Connect is LG's official, documented route · status: active
+- **D2** · 2026-11-25 · TV controlled locally over webOS SSAP; AC through the official ThinQ Connect cloud API with a PAT · LG ACs have no local API; ThinQ Connect is LG's official, documented route · status: TV part active; AC part superseded by D4
 - **D3** · 2026-11-25 · Development workflow: coordinator main-thread agent + implementer/reviewer/designer subagents, `docs/plan.md` + `docs/knowledge_base.md` as the sources of truth, one task per cycle · status: active
+- **D4** · 2026-11-25 · Every device is controlled locally; no cloud services (LG ThinQ rejected). AC route (Matter vs IR blaster) is chosen in T5.1 · user wants local-only control; accepts that AC support depends on the model (Matter) or extra hardware (IR) · status: active
+- **D5** · 2026-11-25 · Build the TV end to end first (core → CLI → Swift bridge → app); AC work starts after · TV has a known local protocol and is already reachable; AC route still open · status: active
+- **D6** · 2026-11-25 · Minimum macOS 26 · this Mac runs 26.5; use current SwiftUI APIs without fallbacks · status: active
+- **D7** · 2026-11-25 · Keep the existing partial `core/` code as a starting point; T0.2 reviews it and makes it compile · Wake-on-LAN + tests are reusable · status: active
+- **D8** · 2026-11-25 · One git commit per finished task; designer reviews screenshots after UI tasks · small reviewable history; catch drift from specs early · status: active
+- **D9** · 2026-11-25 · Cargo workspace with `core` (library, `controlz_core`) and `cli` (binary `controlz`) · keeps CLI-only deps (clap) out of the library shipped in the app · status: active
+- **D10** · 2026-11-25 · Secrets (TV client-key) in the macOS Keychain under one service shared by CLI and app; non-secret device config (TV IP/MAC) in `~/Library/Application Support/Controlz/` · pair once from the CLI, the app reuses it; nothing private in the repo · status: active
 
 ## Conventions
-- Rust crate lives in `core/` (crate name `controlz_core`), Swift package in `app/`.
+- Cargo workspace at the repo root: `core/` (crate `controlz_core`) and `cli/` (binary `controlz`) (D9). Swift package in `app/`.
+- Every device protocol is verified against the real device from the `controlz` CLI before UI work uses it.
 - Generic standards: `.claude/skills/rust-standards`, `.claude/skills/swift-shell`, `.claude/skills/macos-design`. Project-specific overrides go here.
 
 ## Gotchas
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
-- `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). `/bootstrap` decides whether to keep it.
-- ThinQ PAT and TV client-key are secrets: never in code, fixtures, logs or docs.
+- `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
+- The TV client-key is a secret: never in code, fixtures, logs or docs.
+- The TV gets its IP by DHCP; suggest a router reservation so the configured IP stays valid (until SSDP discovery, T6.1).
 
 ## Roadmap sketch
-- **P0 Setup:** toolchain (rustup + MSRV check), crate + workspace layout, build script skeleton, decide on the existing `core/` code.
-- **P1 TV (local):** Wake-on-LAN; webOS connect + pairing (wss→ws, signed→unsigned); commands (volume, mute, apps, inputs, media, power off); pointer-socket buttons; a `controlz-cli` to verify against the real TV.
-- **P2 AC (cloud):** ThinQ HTTP client (headers, regions, errors); device list + profile parsing; state parsing (both temperature shapes); control commands; CLI commands; fixture tests.
-- **P3 FFI:** uniffi exports + tokio runtime; script that builds the static lib and generates Swift bindings.
-- **P4 Design:** designer specs for the menu-bar popover, Settings, and first-run setup (TV pairing, ThinQ token entry).
-- **P5 Swift app:** SwiftPM skeleton + `.app` bundling + Info.plist; Settings + Keychain; TV pairing flow; TV controls; AC controls; error/offline states.
-- **P6 Later:** ThinQ MQTT push for live AC state; SSDP TV discovery; launch at login; signing/notarization.
+See `docs/plan.md`. Phases: P0 Setup · P1 TV core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (TV) · P5 AC (local, route decided in T5.1) · P6 Later (SSDP discovery, launch at login, signing).
 
 ## Open questions
-- TV model/year; IP and MAC (for `docs/local.md`); is "Turn on via Wi-Fi" enabled?
-- AC model; is it registered in the LG ThinQ app?
-- LG account country.
-- Commit policy: one commit per finished task?
-- Keep or delete the partial `core/` code?
-- Minimum macOS version to support.
+- AC model number — needed by T5.1.
+- OK to install `rustup` (Homebrew cargo 1.85 likely too old) — needed by T0.1.
 
 ## Sources
 - Anthropic, Effective harnesses for long-running agents — https://anthropic.com/engineering/effective-harnesses-for-long-running-agents
@@ -117,3 +125,6 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - tv-rs (Rust webOS/Tizen) — https://github.com/Zakarialabib/tv-rs
 - Rust core + Swift shell write-up — https://hackmd.io/@Nyanako0129/tokenbar-rust-swift-ffi-en
 - Apple TN3179 Local Network Privacy — https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy.md
+- LG ThinQ Connect country→region table — https://github.com/thinq-connect/pythinqconnect/blob/main/thinqconnect/country.py (BR → aic; checked 2026-11-25)
+- python-broadlink (IR blaster local protocol) — https://github.com/mjg59/python-broadlink
+- Matter.framework — https://developer.apple.com/documentation/matter
