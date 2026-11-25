@@ -12,7 +12,7 @@
 - Machine: Apple Silicon Mac, macOS 26 (Darwin 25.5). (source: `uname`/`swift --version`, 2026-11-25)
 - Rust: `cargo 1.85.1` from Homebrew (`/opt/homebrew/bin/cargo`). **This may be too old for current crates** (uniffi, tokio-tungstenite, reqwest MSRVs move fast). P0 should check MSRVs and likely switch to `rustup` stable.
 - Swift 6.1, Xcode 16.3. No `xcodegen`/`tuist` installed.
-- **Minimum supported macOS: 26** (D6). This Mac runs macOS 26.5.2 (source: `sw_vers`, 2026-11-25).
+- **Minimum supported macOS: 26** (D6). Installing rustup approved by the user (2026-11-25). This Mac runs macOS 26.5.2 (source: `sw_vers`, 2026-11-25).
 - `jq` available at `/usr/bin/jq` (used by hooks).
 
 ## Devices
@@ -63,7 +63,7 @@ Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.c
   - Port forwarding, DMZ, UPnP, DDNS pages exist. **No local DNS host-override / static-DNS page** was seen.
 - Consequence for the AC: overriding one hostname (needed by ThinQ1 modules, which always call an LG domain) requires running **our own DNS resolver** on the LAN and pointing the router's "specific DNS server" at it — then the whole home's DNS depends on that box being up. A ThinQ2 module can be given our own hostname instead (see below), which may avoid any router change.
 - The earlier "router doesn't answer DNS/HTTP" test was invalid: macOS Local Network permission was blocking the terminal (EHOSTUNREACH on every LAN address, internet fine). (corrected 2026-11-25)
-- Public wildcard DNS (e.g. `<ip-with-dashes>.sslip.io`) resolves to LAN addresses via 8.8.8.8 (tested 2026-11-25). If the router forwards such answers (no DNS-rebind filtering), a ThinQ2 module could be pointed at a local server **without any router change**. Untested through the router.
+- Public wildcard DNS (e.g. `<ip-with-dashes>.sslip.io`) resolves to LAN addresses via 8.8.8.8 (tested 2026-11-25). **The router's DNS forwards these answers too (no DNS-rebind filtering; `dig @router`, 2026-11-25)** → a ThinQ2 module can be pointed at a server on the Mac **without any router change**.
 
 ## AC — local control options (to be decided in T1.1)
 - **Matter (local IP, two-way):** only some newer LG ACs ship Matter support — check the model. A Matter device can join several fabrics (multi-admin), so it could stay in ThinQ/Apple Home and also be commissioned by Controlz. On macOS, candidates are Apple's `Matter.framework` (`MTRDeviceController`, own fabric) or HomeKit (available to Mac Catalyst apps only); a Rust controller (`rs-matter`) is less mature. **All unverified — T1.1 confirms.**
@@ -120,6 +120,7 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - **D8** · 2026-11-25 · One git commit per finished task; designer reviews screenshots after UI tasks · small reviewable history; catch drift from specs early · status: active
 - **D9** · 2026-11-25 · Cargo workspace with `core` (library, `controlz_core`) and `cli` (binary `controlz`) · keeps CLI-only deps (clap) out of the library shipped in the app · status: active
 - **D10** · 2026-11-25 · Secrets (TV client-key) in the macOS Keychain under one service shared by CLI and app; non-secret device config (TV IP/MAC) in `~/Library/Application Support/Controlz/` · pair once from the CLI, the app reuses it; nothing private in the repo · status: active
+- **D12** · 2026-11-25 · The local AC server (stand-in for LG's cloud) runs on this Mac · user choice; app control of the AC only while the Mac is awake is acceptable because the IR remote always works · status: active
 - **D11** · 2026-11-25 · Build the AC end to end first (choose local route → core + CLI → Swift bridge → app); TV follows · user priority · status: active
 
 ## Conventions
@@ -138,12 +139,9 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 See `docs/plan.md`. AC first (D11): P0 Setup · P1 AC route + core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (AC) · P5 TV core + CLI · P6 Mac app (TV) · P7 Later.
 
 ## Open questions
-- Does the router's own DNS pass through public names that resolve to LAN addresses (DNS-rebind filtering)? Test once the terminal has Local Network permission — needed by T1.1
-- Where would the local AC server run: the Mac (AC app control only while the Mac is awake) or an always-on box? — needed by T1.1
 - Is the LCW-003 module ThinQ1 or ThinQ2, and which ThinQ model does it report? Needs the Mac to join the AC's `LG…` network briefly (user OK required) — needed by T1.1
 - Is send-only (IR) acceptable as a fallback, and is buying an IR blaster OK? — needed by T1.1 (only if the rethink route fails)
 - Does the ThinQ or Alexa app show this AC via Matter? (low priority; Matter unlikely) — needed by T1.1
-- OK to install `rustup` (Homebrew cargo 1.85 likely too old) — needed by T0.1.
 
 ## Sources
 - Anthropic, Effective harnesses for long-running agents — https://anthropic.com/engineering/effective-harnesses-for-long-running-agents

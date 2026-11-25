@@ -7,9 +7,6 @@
 `todo` → `in_progress` → `in_review` → `done` · `blocked` (reason in notes) · `reopened` (link to B#/correction)
 
 ## Open questions
-- [ ] OK to install `rustup`? Homebrew cargo 1.85 is likely too old — needed by T0.1
-- [ ] Does the router's DNS pass through public names resolving to LAN addresses? (test after granting Local Network permission to the terminal) — needed by T1.1
-- [ ] Where would the local AC server run: the Mac or an always-on box? — needed by T1.1
 - [ ] OK for the Mac to join the AC's `LG…` setup network briefly to read the module type (ThinQ1/2)? — needed by T1.1
 - [ ] Is send-only IR acceptable as a fallback; is buying an IR blaster OK? — needed by T1.1
 - [ ] Does the AC show in ThinQ/Alexa via Matter? (low priority) — needed by T1.1
@@ -30,7 +27,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
   - [ ] rustup stable installed and pinned in `rust-toolchain.toml`
   - [ ] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
   - [ ] MSRVs of uniffi and tokio-tungstenite recorded in the knowledge base (Environment)
-- notes: needs the user's OK to install rustup
+- notes: rustup install approved by the user (2026-11-25)
 
 ### T0.2 — Workspace + make core/ compile
 - status: todo
@@ -75,7 +72,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-
   - [ ] Evaluates the `rethink` local-cloud route in depth: ThinQ1 vs ThinQ2 for LCW-003, model support, DNS/server requirements, and run-rethink-as-a-service vs clean-room Rust reimplementation (GPL-2.0 implications)
   - [ ] Checks ESP32/ESPHome module-replacement projects for this model; notes hardware, safety and warranty impact
   - [ ] Covers the IR route: LG AC IR protocol support, recommended blaster and how it's driven locally (e.g. Broadlink protocol)
-  - [ ] For the rethink route, picks a DNS strategy that fits the router (KB: Home network): own hostname via public wildcard DNS (ThinQ2 only, no router change) vs own resolver + router "specific DNS server" (whole-home DNS dependency); and where the server runs (Mac vs always-on box)
+  - [ ] For the rethink route, picks a DNS strategy that fits the router (KB: Home network): own hostname via public wildcard DNS (ThinQ2 only, no router change) vs own resolver + router "specific DNS server" (whole-home DNS dependency); with the server on the Mac (D12)
   - [ ] Compares routes on effort, extra hardware, two-way state and macOS feasibility; ends with a recommendation and a proposed task list — no product code
 - notes: research only; user should first create DHCP reservations for the TV, the AC and the server host. Needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
 
@@ -406,3 +403,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · kb: AC is in SoftAP setup mode (not on home Wi-Fi); added `rethink` local-cloud route; T1.1 acceptance + open questions updated · user observation + rethink README/wiki
 - 2026-11-25 · kb: remote AKB75215401; setup mode user-initiated; server-dependent AC control accepted (IR remote always works); Home network section (DNS facts); stale T5.1/T6.1 refs fixed · user answers + DNS probe
 - 2026-11-25 · kb: router capabilities (DHCP DNS option, reservations, no host override); Local Network permission gotcha; T1.1 acceptance adds DNS strategy + server host; router identifiers intentionally not recorded · user screenshots
+- 2026-11-25 · kb: D12 AC server on the Mac; router DNS passes LAN-resolving public names (no router change for ThinQ2); rustup approved; open questions closed · user answers + dig test
