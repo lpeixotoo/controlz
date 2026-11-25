@@ -56,7 +56,13 @@ Source: `aiowebostv` (Home Assistant's library, Apache-2.0) — https://github.c
 
 ## Home network
 - DHCP hands out the **router as the DNS server** (`ipconfig getpacket en0`, 2026-11-25), so the AC will resolve names through the router. The Mac itself is manually set to 8.8.8.8.
-- The router is an ISP-supplied box (MAC vendor Inventus Power Eletronica do Brasil). From the Mac it did **not** answer DNS queries or HTTP on 80/443 in a quick test (2026-11-25) — reason unknown; admin access and custom-DNS support unconfirmed. Address in `docs/local.md`.
+- The router is an ISP-supplied box with a web admin page (user has access). Its identifiers are deliberately **not recorded anywhere** (user request, 2026-11-25).
+- **Router capabilities** (source: user screenshots of the admin UI, 2026-11-25):
+  - DHCP server on; a **"specific DNS server" option** that changes the DNS server handed out by DHCP (currently off). It is network-wide, not per device.
+  - **DHCP reservations** (hostname/MAC → IP): use them to pin the TV, the AC and whichever machine hosts the local AC server.
+  - Port forwarding, DMZ, UPnP, DDNS pages exist. **No local DNS host-override / static-DNS page** was seen.
+- Consequence for the AC: overriding one hostname (needed by ThinQ1 modules, which always call an LG domain) requires running **our own DNS resolver** on the LAN and pointing the router's "specific DNS server" at it — then the whole home's DNS depends on that box being up. A ThinQ2 module can be given our own hostname instead (see below), which may avoid any router change.
+- The earlier "router doesn't answer DNS/HTTP" test was invalid: macOS Local Network permission was blocking the terminal (EHOSTUNREACH on every LAN address, internet fine). (corrected 2026-11-25)
 - Public wildcard DNS (e.g. `<ip-with-dashes>.sslip.io`) resolves to LAN addresses via 8.8.8.8 (tested 2026-11-25). If the router forwards such answers (no DNS-rebind filtering), a ThinQ2 module could be pointed at a local server **without any router change**. Untested through the router.
 
 ## AC — local control options (to be decided in T1.1)
@@ -125,13 +131,15 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
 - `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
 - The TV client-key is a secret: never in code, fixtures, logs or docs.
-- The TV gets its IP by DHCP; suggest a router reservation so the configured IP stays valid (until SSDP discovery, T7.1).
+- The TV gets its IP by DHCP; the router supports DHCP reservations — the user should reserve the TV's (and later the AC's and the AC-server host's) IP so configured addresses stay valid (until SSDP discovery, T7.1).
+- macOS Local Network permission applies to every app that reaches the LAN — including the terminal running the CLI and the user's browser. Denied → instant "No route to host" while the internet still works.
 
 ## Roadmap sketch
 See `docs/plan.md`. AC first (D11): P0 Setup · P1 AC route + core + CLI · P2 Swift bridge · P3 Design specs · P4 Mac app (AC) · P5 TV core + CLI · P6 Mac app (TV) · P7 Later.
 
 ## Open questions
-- Router: model, admin access, can it set a custom DNS entry or change the DHCP DNS server (or would we add a Pi-hole)? — needed by T1.1
+- Does the router's own DNS pass through public names that resolve to LAN addresses (DNS-rebind filtering)? Test once the terminal has Local Network permission — needed by T1.1
+- Where would the local AC server run: the Mac (AC app control only while the Mac is awake) or an always-on box? — needed by T1.1
 - Is the LCW-003 module ThinQ1 or ThinQ2, and which ThinQ model does it report? Needs the Mac to join the AC's `LG…` network briefly (user OK required) — needed by T1.1
 - Is send-only (IR) acceptable as a fallback, and is buying an IR blaster OK? — needed by T1.1 (only if the rethink route fails)
 - Does the ThinQ or Alexa app show this AC via Matter? (low priority; Matter unlikely) — needed by T1.1
