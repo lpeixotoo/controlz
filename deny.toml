@@ -1,0 +1,48 @@
+# cargo-deny 0.22.x policy (KB Tooling, D13). Run: cargo deny check
+# Only macOS targets matter: Controlz is a macOS menu-bar app.
+
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = true
+
+[advisories]
+# Defaults: vulnerabilities and yanked crates are errors; unmaintained
+# advisories only for our direct (workspace) dependencies.
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# Permissive licenses only; GPL/AGPL/LGPL-only crates are rejected.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+]
+confidence-threshold = 0.93
+# The allow-list is policy (KB Tooling), not a mirror of today's graph.
+unused-allowed-license = "allow"
+exceptions = [
+    # Build-time dependency of uniffi; LLVM exception is permissive.
+    { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
+]
+
+[licenses.private]
+# Our own path crates are unlicensed and publish = false.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

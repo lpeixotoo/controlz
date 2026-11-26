@@ -52,6 +52,9 @@ pub struct AcConfig {
 
 impl Config {
     /// `$HOME/Library/Application Support/Controlz/config.toml`.
+    ///
+    /// # Errors
+    /// [`ControlError::Config`] if the home directory cannot be found.
     pub fn default_path() -> Result<PathBuf> {
         let home = std::env::home_dir()
             .ok_or_else(|| ControlError::config("cannot find the home directory"))?;
@@ -63,6 +66,9 @@ impl Config {
     }
 
     /// Reads the file at `path`. A missing file gives the default (empty) config.
+    ///
+    /// # Errors
+    /// [`ControlError::Config`] if the file cannot be read or is not valid TOML.
     pub fn load_from(path: &Path) -> Result<Self> {
         tracing::debug!(path = %path.display(), "loading config");
         match fs::read_to_string(path) {
@@ -101,6 +107,9 @@ impl Config {
     /// Writes the config to `path` atomically (temp file + rename), creating
     /// the parent directory if needed. The temp name includes the process id
     /// so the CLI and the app saving at once do not clobber each other's file.
+    ///
+    /// # Errors
+    /// [`ControlError::Config`] if the directory, temp file or rename fails.
     pub fn save_to(&self, path: &Path) -> Result<()> {
         tracing::debug!(path = %path.display(), "saving config");
         let io_err = |e: std::io::Error| ControlError::config(format!("{}: {e}", path.display()));
@@ -121,11 +130,17 @@ impl Config {
     }
 
     /// The config as TOML text.
+    ///
+    /// # Errors
+    /// [`ControlError::Config`] if serialization fails.
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string(self).map_err(ControlError::config)
     }
 
     /// Sets a dotted key (see [`CONFIG_KEYS`]). Values are validated.
+    ///
+    /// # Errors
+    /// [`ControlError::Invalid`] for an unknown key or a bad value.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         let value = value.trim();
         if value.is_empty() {
@@ -153,6 +168,9 @@ impl Config {
     }
 
     /// Reads a dotted key (see [`CONFIG_KEYS`]); `None` when it is not set.
+    ///
+    /// # Errors
+    /// [`ControlError::Invalid`] for an unknown key.
     pub fn get(&self, key: &str) -> Result<Option<String>> {
         let tv = self.tv.as_ref();
         match key {
@@ -260,7 +278,7 @@ mod tests {
         let leftovers: Vec<_> = fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
             .collect();
         assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
     }
@@ -301,5 +319,14 @@ mod tests {
         assert_eq!(future.len(), 2);
         assert_eq!(reloaded.extra.len(), 1);
         assert_no_tmp_files(&dir.0);
+    }
+
+    /// Pins the on-disk TOML layout. The MAC is left out on purpose: any MAC
+    /// in the `.snap` file would trip the privacy pre-commit hook.
+    #[test]
+    fn config_toml_snapshot() {
+        let mut cfg = Config::default();
+        cfg.set("tv.host", "192.0.2.1").unwrap(); // privacy:allow (TEST-NET-1)
+        insta::assert_snapshot!(cfg.to_toml().unwrap());
     }
 }

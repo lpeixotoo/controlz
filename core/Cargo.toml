@@ -13,6 +13,9 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 required-features = ["bindgen"]
 
+[lints]
+workspace = true
+
 [features]
 # Builds the uniffi-bindgen binary (pulls in uniffi's CLI dependencies).
 bindgen = ["uniffi/cli"]
@@ -27,3 +30,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+insta = { workspace = true }

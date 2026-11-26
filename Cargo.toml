@@ -20,6 +20,18 @@ tracing = "0.1.44"
 clap = { version = "4.6.10", features = ["derive"] }
 security-framework = "3.7.0"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "ansi"] }
+# Dev only: snapshot tests.
+insta = "1.49"
+
+# Lint policy (KB Tooling, D13). Members opt in with `[lints] workspace = true`.
+# Explicit allows of noisy pedantic lints go on their own line with a comment.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 
 [profile.release]
 lto = true

@@ -1,0 +1,6 @@
+---
+source: core/src/config.rs
+expression: cfg.to_toml().unwrap()
+---
+[tv]
+host = "192.0.2.1"

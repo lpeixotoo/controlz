@@ -28,4 +28,18 @@ if [ -n "$hits" ]; then
   echo "Move it to docs/local.md (gitignored), or mark an obvious fake with 'privacy:allow'." >&2
   exit 1
 fi
+
+# Fast fmt check, only when Rust files are staged. Runs after (never instead
+# of) the privacy check. Uses rustup's cargo, never Homebrew's.
+if git diff --cached --name-only --diff-filter=ACMR -- '*.rs' | grep -q .; then
+  if [ -x "$HOME/.cargo/bin/cargo" ]; then
+    if ! unformatted=$(PATH="$HOME/.cargo/bin:$PATH" cargo fmt --all --check -- -l 2>&1); then
+      echo "pre-commit: Rust code is not formatted; run cargo fmt --all" >&2
+      printf '%s\n' "$unformatted" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  else
+    echo "pre-commit: warning: rustup cargo not found in ~/.cargo/bin; skipping fmt check" >&2
+  fi
+fi
 exit 0

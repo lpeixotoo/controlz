@@ -9,6 +9,9 @@ publish.workspace = true
 name = "controlz"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 controlz_core = { path = "../core" }
 clap = { workspace = true }

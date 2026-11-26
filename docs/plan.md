@@ -61,7 +61,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - notes: from T0.2: remove `[workspace.dependencies]` entries no member uses (they print "unused workspace dependency" warnings; at T0.2 close: futures-util, native-tls, serde, serde_json, tokio-tungstenite); keep any this task starts using; later tasks re-add theirs.
 
 ### T0.4 — Rust quality tooling
-- status: todo
+- status: done
 - deps: T0.2
 - owner: implementer
 - files: Cargo.toml, deny.toml, .config/nextest.toml, .editorconfig, scripts/check.sh, .githooks/pre-commit
@@ -69,10 +69,10 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - design: -
 - approach: Add `[workspace.lints]` (see KB Tooling), `.config/nextest.toml`, `deny.toml` (license allow-list, advisories, sources), `insta` dev-dependency, `.editorconfig`, and a fast `cargo fmt --check` step in `.githooks/pre-commit` after the privacy check. Extend `scripts/check.sh` to run fmt, clippy `-D warnings`, nextest, doctests, cargo-deny, cargo-machete, failing on the first error with a clear message; it installs nothing silently — it prints the `cargo install` line if a tool is missing.
 - acceptance:
-  - [ ] `[workspace.lints]` configured per KB Tooling; the workspace is clean under clippy `-D warnings`
-  - [ ] `scripts/check.sh` runs fmt check, clippy, nextest, doctests, cargo-deny and cargo-machete, all green
-  - [ ] `deny.toml` rejects GPL licenses and RustSec advisories (verified by a temporary failing case, then reverted)
-  - [ ] `insta` available as a dev-dependency; the pre-commit hook adds a fast fmt check without weakening the privacy check
+  - [x] `[workspace.lints]` configured per KB Tooling; the workspace is clean under clippy `-D warnings`
+  - [x] `scripts/check.sh` runs fmt check, clippy, nextest, doctests, cargo-deny and cargo-machete, all green
+  - [x] `deny.toml` rejects GPL licenses and RustSec advisories (verified by a temporary failing case, then reverted)
+  - [x] `insta` available as a dev-dependency; the pre-commit hook adds a fast fmt check without weakening the privacy check
 - notes: user installs the cargo tools once (check.sh prints the exact command)
 
 ### T0.5 — CI and Dependabot
@@ -467,6 +467,7 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · 95ede0e
 - 2026-11-25 · T0.2 · done · root workspace (core + cli stub), core trimmed to uniffi/tokio/thiserror, bindgen feature-gated, error.rs, webos stub, scripts/check.sh · 8713341
 - 2026-11-25 · T0.3 · done · controlz CLI (clap: ac/tv stubs, config set/get/show/path, config secret set/status/delete via piped stdin), Config + Secret in core, Keychain service dev.controlz, unknown config keys kept, -v tracing
+- 2026-11-26 · T0.4 · done · workspace lints (clippy all deny, pedantic warn, unsafe_code deny), deny.toml, nextest config, .editorconfig, insta + Config snapshot, check.sh full gate (fmt/clippy/nextest/doctests/deny/machete), pre-commit fmt check after privacy check, rust-check.sh delegates to check.sh
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -494,3 +495,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.2 done; T0.3 notes: drop unused [workspace.dependencies] pins · user approved close; user chose to fold the warning cleanup into the next task
 - 2026-11-25 · kb: D17 (coordinator thread stays lean: no large skills/docs, targeted reads, short output) · cost evaluation; user chose this option only
 - 2026-11-25 · T0.3 done · user approved close
+- 2026-11-26 · T0.4 done · user approved close

@@ -1,0 +1,9 @@
+# cargo-nextest 0.9.x configuration.
+
+[profile.default]
+fail-fast = true
+
+# Full run for CI: report every failure, no retries hiding flaky tests.
+[profile.ci]
+fail-fast = false
+retries = 0

@@ -179,7 +179,7 @@ Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
   - **cargo-nextest** 0.9.x as the test runner (+ `cargo test --doc` for doctests).
   - **cargo-deny** 0.22.x: RustSec advisories, license allow-list (MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, MPL-2.0; **no GPL** — keeps any rethink-derived work clean-room), banned/duplicate crates, allowed sources.
   - **cargo-machete** 0.10.x: unused dependencies.
-  - **insta** 1.x: snapshot tests for protocol messages (`cargo insta review`).
+  - **insta** 1.x: snapshot tests for protocol messages (review with the optional `cargo insta review` tool, not installed; without it, write snapshots with `INSTA_UPDATE=always`).
   - **cargo-llvm-cov** 0.9.x: coverage report on demand (not a gate).
 - **Swift**
   - Swift 6 language mode (complete strict concurrency), warnings as errors in CI.
@@ -191,6 +191,14 @@ Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
   - `.editorconfig` for whitespace basics.
   - Git hooks: `.githooks/pre-commit` keeps the privacy check and adds a fast `cargo fmt --check` (no clippy/tests, to stay fast).
   - **CI:** GitHub Actions on a macOS runner (repo is public → free), actions pinned by commit SHA, `permissions: contents: read`, Rust cache; runs `scripts/check.sh`. **Dependabot** weekly for Cargo and GitHub Actions.
+- **Facts from T0.4 (2026-11-26)**
+  - Installed versions: cargo-nextest 0.9.152, cargo-deny 0.22.1, cargo-machete 0.10.1 (`cargo install --locked ...`, the exact line is in `scripts/check.sh`); insta 1.49.0. Source: crates.io, local install.
+  - `.claude/scripts/rust-check.sh` just runs `scripts/check.sh`, so agents and CI share one gate. Source: T0.4.
+  - `uniffi::setup_scaffolding!()` does not trip `unsafe_code = "deny"`; no exemption needed. Source: clippy run, T0.4.
+  - License quirks: `target-lexicon` is `Apache-2.0 WITH LLVM-exception` (per-crate exception in `deny.toml`); uniffi crates are MPL-2.0; our path crates are unlicensed and skipped via `[licenses.private] ignore = true` (publish = false). `syn` 2.x and 3.x are both in the graph (duplicate = warn). Source: `cargo deny check`, T0.4.
+  - cargo-deny accepts `--locked --workspace --all-features` before `check`; `--hide-inclusion-graph` keeps the duplicate warning short. Fails with exit 4 on a GPL-3.0-only dependency and exit 1 on RUSTSEC-2021-0003 (smallvec 1.6.0); both checked and reverted. Source: T0.4.
+  - Insta snapshots live in `core/src/snapshots/`; a new one is written with `INSTA_UPDATE=always` (cargo-insta isn't installed). Keep MAC addresses out of `.snap` files: they can't hold a `privacy:allow` marker, so the pre-commit hook would block them. Source: T0.4.
+  - The pre-commit fmt step checks formatting of the working tree, not just the staged content. Source: `.githooks/pre-commit`.
 - Considered, not adopted: SwiftFormat (nicklockwood) — swift-format is bundled and sufficient; cargo-udeps — needs nightly, cargo-machete covers it; cargo-audit — cargo-deny covers advisories.
 
 ## Gotchas

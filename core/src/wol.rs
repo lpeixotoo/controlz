@@ -3,6 +3,10 @@ use tokio::net::UdpSocket;
 
 /// Sends a Wake-on-LAN magic packet. LG TVs need "Turn on via Wi-Fi"
 /// (or "Mobile TV On") enabled in their settings for this to work.
+///
+/// # Errors
+/// [`ControlError::Invalid`] for a malformed MAC, or [`ControlError::Network`]
+/// if the UDP socket cannot be opened or the packet cannot be sent.
 pub async fn send_magic_packet(mac: &str) -> Result<()> {
     let bytes = parse_mac(mac)?;
     let mut packet = vec![0xFFu8; 6];
