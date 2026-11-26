@@ -16,6 +16,7 @@
 - `jq` available at `/usr/bin/jq` (used by hooks).
 - **Rust toolchain (T0.1):** rustup 1.29.3 (official `sh.rustup.rs` installer, `--no-modify-path`), toolchain **1.100.0** (`rustc 1.100.0 (0ef1bc386 2026-11-09)`, `cargo 1.100.0`), current stable on 2026-11-25. Pinned in `rust-toolchain.toml` (`channel = "1.100.0"`, `rustfmt` + `clippy`). (source: `rustc --version`, `static.rust-lang.org/dist/channel-rust-stable.toml`, 2026-11-25)
   - PATH: `~/.zshrc` ends with `export PATH="$HOME/.cargo/bin:$PATH"`. It has to be the **last** PATH change, because `.zshrc` prepends `/opt/homebrew/bin` near the top. Homebrew `rust` 1.85.1 stays installed but is shadowed. Homebrew's `cargo` ignores `rust-toolchain.toml` (only the rustup proxies in `~/.cargo/bin` honor it). Check with `which cargo` → `~/.cargo/bin/cargo`. GUI processes (Xcode build phases) don't read `.zshrc`, so scripts they run should call `~/.cargo/bin/cargo` or set PATH themselves. (source: `zsh -i -c 'which -a cargo'`, 2026-11-25)
+  - Claude Code agent Bash shells and hooks (and formerly the rust-check hook; now `.claude/scripts/rust-check.sh`, which forces `~/.cargo/bin` and `--locked`) do **not** get `~/.cargo/bin` on PATH, so they run Homebrew cargo 1.85.1. That cargo fails on the 1.85+ MSRV deps ("rustc 1.85.1 is not supported by the following packages"). Worse, its MSRV-aware resolver writes a `Cargo.lock` pinned to 1.85-compatible versions (it chose `cargo-platform` 0.3.0 and `textwrap` 0.16.2 instead of 0.3.3 and 0.16.4). Prefix agent commands with `export PATH="$HOME/.cargo/bin:$PATH"`. If Homebrew cargo wrote the lockfile, run `cargo generate-lockfile` again with 1.100. (source: hook output plus diffing the lockfiles, 2026-11-25)
   - cargo 1.100 has a built-in manifest lint `cargo::unused_dependencies` (warn by default). It flags declared-but-unused deps at build time. (source: build output, 2026-11-25)
 - **Core dependency MSRVs** (`rust_version` from `https://crates.io/api/v1/crates/<name>`; 2026-11-25). The pin 1.100.0 satisfies all of them:
   | crate | version | MSRV |
@@ -28,7 +29,7 @@
   | serde | 1.0.229 | 1.56 |
   | serde_json | 1.0.154 | 1.71 |
   | thiserror | 2.0.21 | 1.77 |
-  - Highest declared MSRV in the whole resolved graph (133 packages, `cargo metadata`): **1.91** (`cargo-platform` 0.3.3, pulled in by uniffi's `cli` feature via `cargo_metadata`); then 1.88 (`askama` 0.16.x, `textwrap` 0.16.4). 29 packages declare none (all `uniffi_*` among them).
+  - Highest declared MSRV in the whole resolved graph (133 locked dependency packages plus `controlz_core`, `cargo metadata`): **1.91** (`cargo-platform` 0.3.3, pulled in by uniffi's `cli` feature via `cargo_metadata`); then 1.88 (`askama` 0.16.x, `textwrap` 0.16.4). 29 packages declare none (all `uniffi_*` among them).
   - Removed in T0.1: `reqwest` (ThinQ only, D4), `uuid` and `base64` (no users in `core/src`).
 
 ## Devices
@@ -186,10 +187,9 @@ Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
 - Considered, not adopted: SwiftFormat (nicklockwood) — swift-format is bundled and sufficient; cargo-udeps — needs nightly, cargo-machete covers it; cargo-audit — cargo-deny covers advisories.
 
 ## Gotchas
-- Agent-definition hooks (`.claude/agents/*.md` frontmatter) are loaded when a session starts; editing them takes effect only after restarting Claude Code. Hook input carries `agent_id`/`agent_type` for subagent tool calls, none for the main session (verified 2026-11-25).
 - An app that **listens** for connections (the AC server) triggers the macOS application-firewall "accept incoming connections" prompt when the firewall is on. Ad-hoc signed builds change identity every build → the prompt can repeat during development. Stable signing (T7.3) fixes it.
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
-- `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
+- `core/` contains a **partial, uncompiled** start from before the workflow existed: ~~`Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain)~~ (corrected 2026-11-25: T0.1 bumped Cargo.toml, see Environment), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
 - The TV client-key is a secret: never in code, fixtures, logs or docs.
 - The TV gets its IP by DHCP; the router supports DHCP reservations — the user should reserve the TV's (and later the AC's and the AC-server host's) IP so configured addresses stay valid (until SSDP discovery, T7.1).
 - macOS Local Network permission applies to every app that reaches the LAN — including the terminal running the CLI and the user's browser. Denied → instant "No route to host" while the internet still works.

@@ -17,7 +17,7 @@
 Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 
 ### T0.1 — Rust toolchain via rustup
-- status: blocked
+- status: done
 - deps: -
 - owner: implementer
 - files: rust-toolchain.toml, core/Cargo.toml
@@ -25,10 +25,10 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - design: -
 - approach: Install rustup (`rustup-init -y`), pin an exact stable version + `rustfmt`/`clippy` in `rust-toolchain.toml`; make sure `~/.cargo/bin` precedes Homebrew's cargo on PATH (Homebrew rust can stay installed but unused). Bump to current majors (uniffi 0.33, tokio-tungstenite 0.30), move to edition 2024, drop `reqwest` (and `uuid`/`base64` unless still used). `cargo build -p controlz_core` must pass.
 - acceptance:
-  - [ ] rustup stable installed and pinned in `rust-toolchain.toml`
-  - [ ] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
-  - [ ] MSRV of every core dependency recorded in the knowledge base (Environment); the pinned toolchain satisfies all of them
-- notes: rustup install approved by the user (2026-11-25). BLOCKED 2026-11-25: the coordinator's guard-paths.sh hook also fires inside the implementer subagent, so it cannot edit rust-toolchain.toml / core/Cargo.toml. Toolchain (1.100.0) installed, MSRVs in KB, both files staged + verified in the session scratchpad (staged/). Guard fixed (`--main-only`, commit 5c05f6f, user-approved) but agent hooks load at session start → **restart Claude Code, then resume T0.1**: write the staged files (/private/tmp/claude-501/-Users-lucaspeixoto-Documents-Lucas-Peixoto-controlz/368fb34f-f5eb-4f2e-8fbf-c92b4ae88f65/scratchpad/staged/rust-toolchain.toml and staged/core/Cargo.toml — re-create from the KB/approach if gone), then `cargo build -p controlz_core` (only the E0583 thinq/webos errors expected until T0.2) and review.
+  - [x] rustup stable installed and pinned in `rust-toolchain.toml`
+  - [x] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
+  - [x] MSRV of every core dependency recorded in the knowledge base (Environment); the pinned toolchain satisfies all of them
+- notes: rustup install approved by the user (2026-11-25). Blocked twice by the coordinator path guard (fixed in 5c05f6f, session restarted). Implemented: rust-toolchain.toml (1.100.0, rustfmt+clippy), core/Cargo.toml (edition 2024; uniffi 0.33.0, tokio 1.54.1, tokio-tungstenite 0.30.0, native-tls 0.2.18, futures-util 0.3.34, serde 1.0.229, serde_json 1.0.154, thiserror 2.0.21; reqwest/uuid/base64 removed), core/Cargo.lock, KB Environment MSRV table. **Reviewer: PASS (2026-11-25)** — all 3 criteria verified; only E0583 thinq/webos errors remain (T0.2). Closed with the user's OK (2026-11-25).
 
 ### T0.2 — Workspace + make core/ compile
 - status: todo
@@ -43,7 +43,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
   - [ ] `lib.rs` declares only modules that exist (`webos` stub, `wol`); the `thinq` module is removed
   - [ ] `scripts/check.sh` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, all green
   - [ ] Existing Wake-on-LAN tests pass
-- notes:
+- notes: from T0.1 review: (1) put uniffi's `cli` feature behind a crate feature (e.g. `bindgen = ["uniffi/cli"]` + `required-features` on the `uniffi-bindgen` bin) so the bindgen stack stays out of the shipped staticlib; (2) fix the lib.rs crate doc that still mentions ThinQ cloud (D4); (3) move core/Cargo.lock to the workspace root; (4) set `rust-version` in `[workspace.package]` (≥ 1.95 for uniffi; 1.100 matches the pin); (5) decide how to handle cargo 1.100's `unused_dependencies` lint for deps not used yet.
 
 ### T0.3 — CLI skeleton, config and Keychain secrets
 - status: todo
@@ -464,6 +464,7 @@ Goal: nice-to-haves.
 <!-- one line per finished task/session: date · task · outcome · commit -->
 - 2026-11-25 · bootstrap · plan + knowledge base written; TV found on the LAN · -
 - 2026-11-25 · bootstrap · plan v4 approved by the user (incl. D9, D10) · -
+- 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · e918fb4
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -482,5 +483,6 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.1 blocked: coordinator path-guard hook applies to subagents · found during the first implementer run
 - 2026-11-25 · coordinator path guard now `--main-only` (skips tool calls carrying `agent_id`); subagents keep their own guards · user-approved fix for the T0.1 block
 - 2026-11-25 · T0.1 blocked again: hook fix only takes effect after a session restart · second implementer run
+- 2026-11-25 · KB: removed the hook-reload gotcha (user: not needed); T0.1 resumed after session restart · user request
 - 2026-11-25 · D14: no task commits or status moves past in_review without the user's OK; implement-task skill updated; rust-check hook → reviewer script (b2b0492); KB Gotchas core/ line corrected; T0.2 notes get T0.1 review follow-ups · user instruction + T0.1 review
 - 2026-11-25 · D15 (no outside-repo changes without prior approval) and D16 (editing agents return a brief for approval before working); task-contract, implementer, designer, implement-task and CLAUDE.md updated · user instruction after T0.1 touched ~/.zshrc

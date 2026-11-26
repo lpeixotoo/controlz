@@ -1,0 +1,6 @@
+# Pinned Rust toolchain (rustup). Must satisfy the MSRV of every core
+# dependency; see docs/knowledge_base.md -> Environment.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
