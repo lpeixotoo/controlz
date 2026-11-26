@@ -31,7 +31,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - notes: rustup install approved by the user (2026-11-25). Blocked twice by the coordinator path guard (fixed in 5c05f6f, session restarted). Implemented: rust-toolchain.toml (1.100.0, rustfmt+clippy), core/Cargo.toml (edition 2024; uniffi 0.33.0, tokio 1.54.1, tokio-tungstenite 0.30.0, native-tls 0.2.18, futures-util 0.3.34, serde 1.0.229, serde_json 1.0.154, thiserror 2.0.21; reqwest/uuid/base64 removed), core/Cargo.lock, KB Environment MSRV table. **Reviewer: PASS (2026-11-25)** — all 3 criteria verified; only E0583 thinq/webos errors remain (T0.2). Closed with the user's OK (2026-11-25).
 
 ### T0.2 — Workspace + make core/ compile
-- status: todo
+- status: done
 - deps: T0.1
 - owner: implementer
 - files: Cargo.toml, core/Cargo.toml, core/src/lib.rs, core/src/wol.rs, core/src/webos.rs, scripts/check.sh, .gitignore
@@ -39,11 +39,11 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - design: -
 - approach: Root `Cargo.toml` with `[workspace] members = ["core","cli"]`, `resolver = "3"`, `[workspace.package]` (edition, rust-version) and `[workspace.dependencies]`; build output moves to root `target/`. `lib.rs`: drop `thinq`, keep `wol`, add an empty `webos` module and `error.rs` with `ControlError`; keep `uniffi::setup_scaffolding!()`. First `scripts/check.sh` = fmt + clippy + test (T0.4 extends it).
 - acceptance:
-  - [ ] Root Cargo workspace with members `core` and `cli` (cli may be a stub `main`); `.gitignore` covers the root `target/`
-  - [ ] `lib.rs` declares only modules that exist (`webos` stub, `wol`); the `thinq` module is removed
-  - [ ] `scripts/check.sh` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, all green
-  - [ ] Existing Wake-on-LAN tests pass
-- notes: from T0.1 review: (1) put uniffi's `cli` feature behind a crate feature (e.g. `bindgen = ["uniffi/cli"]` + `required-features` on the `uniffi-bindgen` bin) so the bindgen stack stays out of the shipped staticlib; (2) fix the lib.rs crate doc that still mentions ThinQ cloud (D4); (3) move core/Cargo.lock to the workspace root; (4) set `rust-version` in `[workspace.package]` (≥ 1.95 for uniffi; 1.100 matches the pin); (5) decide how to handle cargo 1.100's `unused_dependencies` lint for deps not used yet.
+  - [x] Root Cargo workspace with members `core` and `cli` (cli may be a stub `main`); `.gitignore` covers the root `target/`
+  - [x] `lib.rs` declares only modules that exist (`webos` stub, `wol`); the `thinq` module is removed
+  - [x] `scripts/check.sh` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, all green
+  - [x] Existing Wake-on-LAN tests pass
+- notes: T0.2 review PASS (2026-11-25); open: 5 "unused workspace dependency" warnings (futures-util, native-tls, serde, serde_json, tokio-tungstenite) — decide accept / drop pins / allow lint; follow-ups: align .claude/scripts/rust-check.sh with scripts/check.sh (--all-features) in T0.4; re-check MSRVs when T1.x re-adds the pruned crates. Earlier, from T0.1 review: (1) put uniffi's `cli` feature behind a crate feature (e.g. `bindgen = ["uniffi/cli"]` + `required-features` on the `uniffi-bindgen` bin) so the bindgen stack stays out of the shipped staticlib; (2) fix the lib.rs crate doc that still mentions ThinQ cloud (D4); (3) move core/Cargo.lock to the workspace root; (4) set `rust-version` in `[workspace.package]` (≥ 1.95 for uniffi; 1.100 matches the pin); (5) decide how to handle cargo 1.100's `unused_dependencies` lint for deps not used yet.
 
 ### T0.3 — CLI skeleton, config and Keychain secrets
 - status: todo
@@ -58,7 +58,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
   - [ ] `controlz config set <key> <value>` writes `~/Library/Application Support/Controlz/config.toml`; nothing is read from the repo
   - [ ] Secrets are read/written in the macOS Keychain under one service name recorded in the knowledge base
   - [ ] A test proves secret values never appear in `Debug` output or logs
-- notes:
+- notes: from T0.2: remove `[workspace.dependencies]` entries no member uses (they print "unused workspace dependency" warnings; at T0.2 close: futures-util, native-tls, serde, serde_json, tokio-tungstenite); keep any this task starts using; later tasks re-add theirs.
 
 ### T0.4 — Rust quality tooling
 - status: todo
@@ -465,6 +465,7 @@ Goal: nice-to-haves.
 - 2026-11-25 · bootstrap · plan + knowledge base written; TV found on the LAN · -
 - 2026-11-25 · bootstrap · plan v4 approved by the user (incl. D9, D10) · -
 - 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · 95ede0e
+- 2026-11-25 · T0.2 · done · root workspace (core + cli stub), core trimmed to uniffi/tokio/thiserror, bindgen feature-gated, error.rs, webos stub, scripts/check.sh · HASH
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -488,3 +489,5 @@ Goal: nice-to-haves.
 - 2026-11-25 · D15 (no outside-repo changes without prior approval) and D16 (editing agents return a brief for approval before working); task-contract, implementer, designer, implement-task and CLAUDE.md updated · user instruction after T0.1 touched ~/.zshrc
 - 2026-11-25 · KB: D4 wording updated to the current AC route options; D11 moved back into numeric order · user OK
 - 2026-11-25 · agents' effort high → medium; lean briefs (coordinator pastes KB excerpts; brief runs return `findings` for the implement run) · user request to cut token usage
+- 2026-11-25 · KB: T0.2 Environment line on unused workspace deps (implementer); core/ Gotcha struck as corrected; uniffi `cli` MSRV rows annotated as bindgen-only · T0.2 review kb_conflicts
+- 2026-11-25 · T0.2 done; T0.3 notes: drop unused [workspace.dependencies] pins · user approved close; user chose to fold the warning cleanup into the next task

@@ -1,7 +1,9 @@
 [package]
 name = "controlz_core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lib]
 crate-type = ["staticlib", "lib"]
@@ -9,17 +11,13 @@ crate-type = ["staticlib", "lib"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# Builds the uniffi-bindgen binary (pulls in uniffi's CLI dependencies).
+bindgen = ["uniffi/cli"]
 
 [dependencies]
-uniffi = { version = "0.33.0", features = ["tokio", "cli"] }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
-tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
-native-tls = "0.2.18"
-futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-thiserror = "2.0.21"
-
-[profile.release]
-lto = true
-strip = true
+uniffi = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true }
+thiserror = { workspace = true }

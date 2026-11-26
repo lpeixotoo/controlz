@@ -1,0 +1,25 @@
+[workspace]
+members = ["core", "cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+
+# Shared dependency pins. Members opt in with `name = { workspace = true }`.
+# Some are not used yet; they keep the versions chosen in T0.1 for later tasks.
+[workspace.dependencies]
+uniffi = "0.33.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
+native-tls = "0.2.18"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+
+[profile.release]
+lto = true
+strip = true

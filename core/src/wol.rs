@@ -10,7 +10,9 @@ pub async fn send_magic_packet(mac: &str) -> Result<()> {
         packet.extend_from_slice(&bytes);
     }
 
-    let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(ControlError::network)?;
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(ControlError::network)?;
     socket.set_broadcast(true).map_err(ControlError::network)?;
     for port in [9, 7] {
         socket
@@ -40,8 +42,10 @@ mod tests {
 
     #[test]
     fn parses_mac() {
-        assert_eq!(parse_mac("a8:23:fe:01:02:0F").unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]); // privacy:allow (fake MAC)
-        assert_eq!(parse_mac("A8-23-FE-01-02-0F").unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]);
+        let colon = "a8:23:fe:01:02:0F"; // privacy:allow (fake MAC)
+        let dash = "A8-23-FE-01-02-0F"; // privacy:allow (fake MAC)
+        assert_eq!(parse_mac(colon).unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]);
+        assert_eq!(parse_mac(dash).unwrap(), [0xa8, 0x23, 0xfe, 1, 2, 0x0f]);
         assert!(parse_mac("a8:23:fe").is_err());
     }
 }
