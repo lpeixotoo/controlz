@@ -464,7 +464,7 @@ Goal: nice-to-haves.
 <!-- one line per finished task/session: date · task · outcome · commit -->
 - 2026-11-25 · bootstrap · plan + knowledge base written; TV found on the LAN · -
 - 2026-11-25 · bootstrap · plan v4 approved by the user (incl. D9, D10) · -
-- 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · e918fb4
+- 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · 95ede0e
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
