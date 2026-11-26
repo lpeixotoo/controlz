@@ -28,6 +28,25 @@ If the brief, the knowledge base and the code disagree, stop and report the conf
 ```
 Statuses: `todo` → `in_progress` → `in_review` → `done`; or `blocked` (with a reason in notes) and `reopened` (with a link to the bug or correction).
 
+## Brief first (D16)
+Every agent that edits files (implementer, designer) works in two dispatches:
+1. **Brief mode** — the coordinator's brief says `mode: brief`. Read what you need, change nothing (no edits, installs, or commands with side effects), and return a brief:
+```
+task: T1.2
+mode: brief
+plan: 3–6 bullets — what you will do, in order
+repo_files: paths you expect to create/modify/delete
+outside_repo: every change outside the repo (installs, shell profiles, global config, ~/Library, caches you knowingly create), with the exact command or line — or "none"
+new_dependencies: name + why, or "none"
+side_effects: network calls, device contact, long builds, anything the user should know — or "none"
+questions: anything you need decided first, or "none"
+```
+2. **Implement mode** — after the user approves the brief, the coordinator sends it back with `mode: implement`. Stay inside the approved brief. If you need anything it didn't list (a new file outside `repo_files`, a dependency, any outside-the-repo change), stop and report `status: blocked` with the question instead of doing it.
+Read-only agents (reviewer) skip brief mode.
+
+## Outside the repo (D15)
+Never change anything outside the repository — installs, `~/.zshrc` and other profiles, global git/cargo/brew config, `~/Library`, system settings — unless that exact change was listed in an approved brief. Claude's own session scratchpad and build caches inside the repo are exempt. Unplanned need → stop and report `blocked`.
+
 ## Scope rules
 - Do exactly the task. No drive-by refactors, renames or dependency upgrades outside `files`.
 - If something outside scope is broken, mention it under `follow_ups`; don't fix it.

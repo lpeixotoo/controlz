@@ -482,3 +482,5 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.1 blocked: coordinator path-guard hook applies to subagents · found during the first implementer run
 - 2026-11-25 · coordinator path guard now `--main-only` (skips tool calls carrying `agent_id`); subagents keep their own guards · user-approved fix for the T0.1 block
 - 2026-11-25 · T0.1 blocked again: hook fix only takes effect after a session restart · second implementer run
+- 2026-11-25 · D14: no task commits or status moves past in_review without the user's OK; implement-task skill updated; rust-check hook → reviewer script (b2b0492); KB Gotchas core/ line corrected; T0.2 notes get T0.1 review follow-ups · user instruction + T0.1 review
+- 2026-11-25 · D15 (no outside-repo changes without prior approval) and D16 (editing agents return a brief for approval before working); task-contract, implementer, designer, implement-task and CLAUDE.md updated · user instruction after T0.1 touched ~/.zshrc
