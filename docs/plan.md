@@ -7,9 +7,9 @@
 `todo` → `in_progress` → `in_review` → `done` · `blocked` (reason in notes) · `reopened` (link to B#/correction)
 
 ## Open questions
-- [ ] OK for the Mac to join the AC's `LG…` setup network briefly to read the module type (ThinQ1/2)? — needed by T1.1
-- [ ] Is send-only IR acceptable as a fallback; is buying an IR blaster OK? — needed by T1.1
-- [ ] Does the AC show in ThinQ/Alexa via Matter? (low priority) — needed by T1.1
+- [x] OK for the Mac to join the AC's `LG…` setup network briefly to read the module type (ThinQ1/2)? — needed by T1.1 → yes, read-only probe (user, 2026-11-26)
+- [x] Is send-only IR acceptable as a fallback; is buying an IR blaster OK? — needed by T1.1 → IR OK as fallback, evaluated on paper only, no purchase (user, 2026-11-26)
+- [x] Does the AC show in ThinQ/Alexa via Matter? (low priority) — needed by T1.1 → user doesn't know; T1.1 checks sources (2026-11-26)
 
 ---
 
@@ -92,7 +92,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-specific tasks (T1.2+) are added after T1.1.
 
 ### T1.1 — Choose a local AC route
-- status: todo
+- status: done
 - deps: -
 - owner: implementer
 - files: docs/knowledge_base.md
@@ -100,14 +100,14 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-
 - design: -
 - approach: Desk research plus, with your OK, a read-only probe of the AC's setup network (connect TLS to port 5500 and read the module's device-info reply; no Wi-Fi credentials sent). Sources: rethink wiki/code (read for facts only — GPL-2.0, no copying), LG/CSA Matter listings, ESPHome LG projects, IRremoteESP8266's LG protocol. Output: a KB section with the chosen route's protocol notes, a DNS plan, certificate/TLS needs, and a proposed T1.2+ task list for plan-adjust.
 - acceptance:
-  - [ ] Confirms with sources whether S4NQ09WA51A / its LCW-003 module supports Matter (now or via firmware)
-  - [ ] Evaluates the `rethink` local-cloud route in depth: ThinQ1 vs ThinQ2 for LCW-003, model support, DNS/server requirements, and run-rethink-as-a-service vs clean-room Rust reimplementation (GPL-2.0 implications)
-  - [ ] Checks ESP32/ESPHome module-replacement projects for this model; notes hardware, safety and warranty impact
-  - [ ] Covers the IR route: LG AC IR protocol support, recommended blaster and how it's driven locally (e.g. Broadlink protocol)
-  - [ ] For the rethink route, picks a DNS strategy that fits the router (KB: Home network): own hostname via public wildcard DNS (ThinQ2 only, no router change) vs own resolver + router "specific DNS server" (whole-home DNS dependency); with the server on the Mac (D12)
-  - [ ] Compares routes on effort, extra hardware, two-way state and macOS feasibility; ends with a recommendation and a proposed task list — no product code
-  - [ ] Lists the Rust libraries the chosen route needs (e.g. TLS, MQTT) with their MSRVs, added to the knowledge base
-- notes: research only; user should first create DHCP reservations for the TV, the AC and the server host. Needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
+  - [x] Confirms with sources whether S4NQ09WA51A / its LCW-003 module supports Matter (now or via firmware)
+  - [x] Evaluates the `rethink` local-cloud route in depth: ThinQ1 vs ThinQ2 for LCW-003, model support, DNS/server requirements, and run-rethink-as-a-service vs clean-room Rust reimplementation (GPL-2.0 implications)
+  - [x] Checks ESP32/ESPHome module-replacement projects for this model; notes hardware, safety and warranty impact
+  - [x] Covers the IR route: LG AC IR protocol support, recommended blaster and how it's driven locally (e.g. Broadlink protocol)
+  - [x] For the rethink route, picks a DNS strategy that fits the router (KB: Home network): own hostname via public wildcard DNS (ThinQ2 only, no router change) vs own resolver + router "specific DNS server" (whole-home DNS dependency); with the server on the Mac (D12)
+  - [x] Compares routes on effort, extra hardware, two-way state and macOS feasibility; ends with a recommendation and a proposed task list — no product code
+  - [x] Lists the Rust libraries the chosen route needs (e.g. TLS, MQTT) with their MSRVs, added to the knowledge base
+- notes: Probe (read-only, user-approved 2026-11-26): module is ThinQ2, TLS 1.2 CBC only. Findings in KB "T1.1 findings". Route chosen: clean-room Rust local ThinQ2 cloud; OpenSSL 3.6 vendored (D20); ongoing hostname decided later (KB Open questions). Closed with the user's OK (2026-11-26). Originally: research only; user should first create DHCP reservations for the TV, the AC and the server host. Needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
 
 ## P2 — Swift bridge
 Goal: expose the Rust core to Swift with uniffi and a one-command build.
@@ -468,6 +468,7 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.3 · done · controlz CLI (clap: ac/tv stubs, config set/get/show/path, config secret set/status/delete via piped stdin), Config + Secret in core, Keychain service dev.controlz, unknown config keys kept, -v tracing
 - 2026-11-26 · T0.4 · done · workspace lints (clippy all deny, pedantic warn, unsafe_code deny), deny.toml, nextest config, .editorconfig, insta + Config snapshot, check.sh full gate (fmt/clippy/nextest/doctests/deny/machete), pre-commit fmt check after privacy check, rust-check.sh delegates to check.sh
 - 2026-11-26 · T0.5 · done · GitHub Actions CI on macos-latest runs scripts/check.sh on push/PR to main; actions pinned by SHA, contents: read; Dependabot dropped (D19)
+- 2026-11-26 · T1.1 · done · AC module probed (ThinQ2, TLS 1.2 CBC only); routes compared; chosen: clean-room Rust local ThinQ2 cloud with vendored OpenSSL 3.6 (D20); T1.2+ proposed in KB
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -496,3 +497,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · kb: D17 (coordinator thread stays lean: no large skills/docs, targeted reads, short output) · cost evaluation; user chose this option only
 - 2026-11-25 · T0.3 done · user approved close
 - 2026-11-26 · T0.4 done · user approved close
+- 2026-11-26 · T1.1 done · user approved close
