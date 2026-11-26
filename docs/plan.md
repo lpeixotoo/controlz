@@ -491,3 +491,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · agents' effort high → medium; lean briefs (coordinator pastes KB excerpts; brief runs return `findings` for the implement run) · user request to cut token usage
 - 2026-11-25 · KB: T0.2 Environment line on unused workspace deps (implementer); core/ Gotcha struck as corrected; uniffi `cli` MSRV rows annotated as bindgen-only · T0.2 review kb_conflicts
 - 2026-11-25 · T0.2 done; T0.3 notes: drop unused [workspace.dependencies] pins · user approved close; user chose to fold the warning cleanup into the next task
+- 2026-11-25 · kb: D17 (coordinator thread stays lean: no large skills/docs, targeted reads, short output) · cost evaluation; user chose this option only
