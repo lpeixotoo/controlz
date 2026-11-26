@@ -75,19 +75,18 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
   - [x] `insta` available as a dev-dependency; the pre-commit hook adds a fast fmt check without weakening the privacy check
 - notes: user installs the cargo tools once (check.sh prints the exact command)
 
-### T0.5 — CI and Dependabot
-- status: todo
+### T0.5 — CI
+- status: done
 - deps: T0.4
 - owner: implementer
-- files: .github/workflows/ci.yml, .github/dependabot.yml
-- kb: Tooling; Decisions (D13)
+- files: .github/workflows/ci.yml
+- kb: Tooling; Decisions (D13, D19)
 - design: -
-- approach: `.github/workflows/ci.yml`: on push/PR to `main`, macOS runner, `permissions: contents: read`, actions pinned by full SHA, `Swatinem/rust-cache`, tools via `taiki-e/install-action` (nextest, cargo-deny, cargo-machete), then `scripts/check.sh`. `.github/dependabot.yml`: weekly for `cargo` and `github-actions`. No secrets needed.
+- approach: `.github/workflows/ci.yml`: on push/PR to `main`, macOS runner, `permissions: contents: read`, actions pinned by full SHA, `Swatinem/rust-cache`, tools via `taiki-e/install-action` (nextest, cargo-deny, cargo-machete), then `scripts/check.sh`. No secrets needed.
 - acceptance:
-  - [ ] CI runs `scripts/check.sh` on push and PR to `main` on a macOS runner
-  - [ ] Every action pinned by full commit SHA; `permissions: contents: read`
-  - [ ] Dependabot configured weekly for Cargo and GitHub Actions
-- notes: green run verified after the user pushes
+  - [x] CI runs `scripts/check.sh` on push and PR to `main` on a macOS runner
+  - [x] Every action pinned by full commit SHA; `permissions: contents: read`
+- notes: green run verified after the user pushes; Dependabot dropped (D19)
 
 ## P1 — AC route + core + CLI
 Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-specific tasks (T1.2+) are added after T1.1.
@@ -468,6 +467,7 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.2 · done · root workspace (core + cli stub), core trimmed to uniffi/tokio/thiserror, bindgen feature-gated, error.rs, webos stub, scripts/check.sh · 8713341
 - 2026-11-25 · T0.3 · done · controlz CLI (clap: ac/tv stubs, config set/get/show/path, config secret set/status/delete via piped stdin), Config + Secret in core, Keychain service dev.controlz, unknown config keys kept, -v tracing
 - 2026-11-26 · T0.4 · done · workspace lints (clippy all deny, pedantic warn, unsafe_code deny), deny.toml, nextest config, .editorconfig, insta + Config snapshot, check.sh full gate (fmt/clippy/nextest/doctests/deny/machete), pre-commit fmt check after privacy check, rust-check.sh delegates to check.sh
+- 2026-11-26 · T0.5 · done · GitHub Actions CI on macos-latest runs scripts/check.sh on push/PR to main; actions pinned by SHA, contents: read; Dependabot dropped (D19)
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
