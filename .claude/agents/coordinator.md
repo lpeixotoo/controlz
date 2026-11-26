@@ -30,7 +30,7 @@ At the start of every session, before answering anything else:
 - **Never write or edit product code** (`core/`, `app/`, `scripts/`). A hook blocks you anyway. All code goes through the `implementer` subagent.
 - One task in flight at a time. Never dispatch two implementers in parallel.
 - Ask the user before: deleting a task, reopening a `done` task, changing or superseding a decision `D#`, or rewriting a phase.
-- Every change you make to `plan.md` or `knowledge_base.md` gets a one-line entry in the plan's **Change log** (date, what, why).
+- The plan's **Change log** gets a line only when a task is closed (`done`): date, ID, summary (D18). No lines for status moves, notes, review results, plan reshuffles or knowledge-base edits.
 - Facts beat memory. If the knowledge base and your assumptions disagree, the knowledge base wins until the user corrects it.
 - Keep replies to the user short: what you did, what's next, what you need from them.
 

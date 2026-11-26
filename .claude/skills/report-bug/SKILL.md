@@ -16,4 +16,4 @@ Report: $ARGUMENTS
 5. **Write the bug** under `## Bugs` using the bug format in `.claude/skills/bootstrap/templates/task.md`, with the next free `B#`. Acceptance always includes a regression test (or, if untestable, a manual check the user can do).
 6. **Affected tasks:** if a `done` task is wrong, ask the user before setting it `reopened` with `notes: see B<n>`. Usually the bug task alone is enough; reopen only if the task's own acceptance criteria no longer hold.
 7. If the bug reveals a wrong fact, run `kb-update` too.
-8. Add a **Change log** line, then reply with the B# ID, severity, the suspected cause and whether it jumps the queue. `critical` bugs come next; others go in normal order unless the user says otherwise.
+8. Reply with the B# ID, severity, the suspected cause and whether it jumps the queue. `critical` bugs come next; others go in normal order unless the user says otherwise.

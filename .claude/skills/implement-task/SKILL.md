@@ -50,17 +50,17 @@ Set `status: in_review`. Dispatch `reviewer` with the task block, the implemente
 ## 5. Overview, then wait for the user (D14)
 After a reviewer PASS, **stop**. Leave the task at `in_review`: don't tick boxes, don't set `done`, don't commit.
 - Make sure any `kb_additions` from the implementer are in place and well-placed; resolve `kb_conflicts`.
-- Put the review result and follow-ups in the task's `notes`. Propose new tasks or bugs from `follow_ups` via `plan-adjust` only if the user agrees.
+- Do not write review results or follow-ups into `docs/plan.md` (D18); report them to the user in the overview. Propose new tasks or bugs from `follow_ups` via `plan-adjust` only if the user agrees.
 - Give the user an overview: what changed (files), how it was verified, the review verdict and findings, follow-ups, and anything they must do by hand. Ask whether to close and commit.
 
 ## 6. Close and commit (only when the user says so)
-- Tick the verified acceptance boxes, set `status: done`, add a **Session log** line: `<YYYY-MM-DD> · <ID> · done · <one-line summary> · <short commit hash>`.
+- Tick the verified acceptance boxes, set `status: done`, add a **Session log** line: `<YYYY-MM-DD> · <ID> · done · <one-line summary>` (no commit hash: the commit is found with `git log --grep "<ID>:"`).
 - If the user asked to commit, stage only this task's files plus `docs/`:
 ```
 git add <files_changed from the report> docs/
 git commit -m "<ID>: <task title>" -m "<summary from the report>"
 ```
-Then put the short hash into the session log line.
+These plan.md edits go into the same task commit. Never make a separate commit just to log a task as done or to add its hash (D18).
 
 ## 7. Report to the user
 After closing: 3–6 lines: what was done, how it was verified, anything they must do by hand (e.g. accept the pairing prompt on the TV), and the next task.

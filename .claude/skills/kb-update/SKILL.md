@@ -19,5 +19,5 @@ Input: $ARGUMENTS
    - `todo` tasks: update their acceptance or notes directly if the change is mechanical.
    - `done` tasks whose behavior is now wrong: list them and ask the user whether to reopen them. If yes, hand off to `plan-adjust`.
    - New work implied: propose tasks and hand off to `plan-adjust`.
-3. Add a **Change log** line in `docs/plan.md`: `<YYYY-MM-DD> · kb: <what> · <why>`.
+3. No Change log line in `docs/plan.md` (D18: the log records only finished tasks).
 4. Reply: what was recorded, which tasks are affected, what (if anything) you need the user to confirm.

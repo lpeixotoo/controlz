@@ -1,6 +1,6 @@
 ---
 name: plan-adjust
-description: Change docs/plan.md for Controlz - add, split, merge, reorder, re-scope, block or drop tasks and phases, keeping dependencies valid and logging every change. Use when the user wants to tweak the plan or when a correction or bug implies plan changes.
+description: Change docs/plan.md for Controlz - add, split, merge, reorder, re-scope, block or drop tasks and phases, keeping dependencies valid. Use when the user wants to tweak the plan or when a correction or bug implies plan changes.
 argument-hint: "<what to change>"
 ---
 
@@ -26,5 +26,5 @@ scripts/plan-status.sh
    - UI tasks still depend on their design task
    - `scripts/plan-status.sh` parses (run it after editing)
 4. Ask before applying if the change touches `done` work, a decision `D#`, or more than one phase. Otherwise apply directly.
-5. Add a **Change log** line: `<YYYY-MM-DD> · <what changed> · <why>`.
+5. No Change log line (D18: the log records only finished tasks).
 6. Reply with the diff summary (IDs added/changed/removed) and the new next task.
