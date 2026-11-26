@@ -89,7 +89,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - notes: green run verified after the user pushes; Dependabot dropped (D19)
 
 ## P1 — AC route + core + CLI
-Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-specific tasks (T1.2+) are added after T1.1.
+Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route (T1.1): clean-room Rust local ThinQ2 cloud (D20).
 
 ### T1.1 — Choose a local AC route
 - status: done
@@ -109,12 +109,126 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route-
   - [x] Lists the Rust libraries the chosen route needs (e.g. TLS, MQTT) with their MSRVs, added to the knowledge base
 - notes: Probe (read-only, user-approved 2026-11-26): module is ThinQ2, TLS 1.2 CBC only. Findings in KB "T1.1 findings". Route chosen: clean-room Rust local ThinQ2 cloud; OpenSSL 3.6 vendored (D20); ongoing hostname decided later (KB Open questions). Closed with the user's OK (2026-11-26). Originally: research only; user should first create DHCP reservations for the TV, the AC and the server host. Needs the open questions answered (AC network location, remote model, IR acceptable?). After the user picks a route, the coordinator adds T1.2+ (AC core + CLI) via plan-adjust.
 
+### T1.2 — Legacy TLS + PKI module
+- status: done
+- deps: T1.1
+- owner: implementer
+- files: Cargo.toml, Cargo.lock, core/Cargo.toml, core/src/lib.rs, core/src/ac/mod.rs, core/src/ac/tls.rs, core/src/ac/pki.rs
+- kb: AC — local control options (T1.1 findings: TLS / certificates, Crates); Decisions (D13, D20); Environment; Gotchas
+- design: -
+- approach: `openssl` crate with `vendored` on openssl-src 300.x (OpenSSL 3.6, D20) plus `tokio-openssl`. TLS 1.2-only acceptor and connector profiles (`ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-SHA:AES128-SHA@SECLEVEL=0`, legacy renegotiation flags); an RSA-2048 CA and a server cert with the hostname as SAN; CSR signing. Where the private keys live (Keychain vs 0600 file under Application Support) is decided in the brief: they are secrets.
+- acceptance:
+  - [x] A client restricted to `ECDHE-RSA-AES256-SHA` handshakes with the acceptor; a TLS 1.3-only client is refused (tests)
+  - [x] A test CSR is signed and the cert verifies against the CA; server cert carries the configured SAN
+  - [x] Private keys are never logged or written into the repo; storage location documented in the KB
+  - [ ] `scripts/check.sh` (incl. `cargo deny check`) and CI stay green with the vendored OpenSSL build
+- notes: clean-room rule (KB T1.1 findings): work from the rethink wiki, our captures and MIT/0BSD references only — never the rethink or rethink-rs source. OpenSSL build needs perl/make/Xcode CLT; check CI time. Keys: 0600 PEM files under Application Support/Controlz/pki/ (user choice). Local gate green, cold OpenSSL build 38 s; CI box ticked after the user's push. Closed with the user's OK (2026-11-26).
+
+### T1.3 — SoftAP setup client + `controlz ac setup`
+- status: todo
+- deps: T1.2
+- owner: implementer
+- files: core/src/ac/setup.rs, core/src/ac/mod.rs, cli/src/main.rs, cli/src/ac.rs, core/tests/fixtures/
+- kb: AC — local control options (T1.1 findings: setup protocol); Devices (AC); Decisions (D20); Gotchas
+- design: -
+- approach: Client to the module's SoftAP gateway on 5500 over the T1.2 connector. Streaming splitter for concatenated JSON objects; typed messages (setDeviceInit, getDeviceInfo with optional apiServer/mqttServer, setCertInfo, setApInfo, releaseDev, ping/pong). CLI: `controlz ac setup --info-only` for now; the Wi-Fi password is read from piped stdin like `config secret set` (only used later, by T1.9).
+- acceptance:
+  - [ ] Fixture tests (fake values) for every message, and for split and merged frames
+  - [ ] A mock-module test runs the whole sequence end to end
+  - [ ] **Device step limited to `setDeviceInit` + `getDeviceInfo` without server fields**; `setCertInfo`/`setApInfo`/`releaseDev` are never sent to the real AC in this task
+  - [ ] On the device (user present, AC in setup mode): `modelName` recorded in the KB, uuid and other identifiers only in docs/local.md
+- notes: the module stores a `registered` flag after provisioning that only a Wi-Fi reset clears — so no provisioning before T1.4/T1.5 exist. Whether `getDeviceInfo` persists anything is unverified: note what the brief plans to send and get the user's OK first. Clean-room rule as in T1.2.
+
+### T1.4 — Local cloud HTTPS server
+- status: todo
+- deps: T1.2
+- owner: implementer
+- files: core/Cargo.toml, core/src/ac/cloud.rs, core/src/ac/mod.rs, core/tests/fixtures/
+- kb: AC — local control options (T1.1 findings: local cloud side, DNS plan); Decisions (D12, D20); Gotchas (firewall prompt)
+- design: -
+- approach: hyper 1.x over tokio-openssl on 443 (unprivileged bind works on macOS 26). `/route` returns apiServer/mqttServer built from a configured host (IP or hostname, so T1.9 can try each strategy), `/route/certificate[?name=…]`, `POST /device/<uuid>/certificate` signs the CSR with the T1.2 CA.
+- acceptance:
+  - [ ] Snapshot tests of each response
+  - [ ] A mock-device test fetches route → certs → submits a CSR → gets a cert chaining to our CA
+  - [ ] The advertised host is configurable (plain IP or DNS name); nothing device-specific is hard-coded
+- notes: clean-room rule as in T1.2.
+
+### T1.5 — Single-device MQTT broker + provisioning
+- status: todo
+- deps: T1.2
+- owner: implementer
+- files: core/src/ac/mqtt.rs, core/src/ac/mod.rs, core/tests/fixtures/
+- kb: AC — local control options (T1.1 findings: local cloud side, Crates); Decisions (D20)
+- design: -
+- approach: In-crate MQTT 3.1.1 subset (CONNECT/SUBSCRIBE/PUBLISH QoS 0–1/PING) over TLS on 8883 with client-cert check, one client (clientId = uuid). Handles preDeploy/deploy → completeProvisioning with the default topic names, and the ack; `req_timesync` reply decided from captures.
+- acceptance:
+  - [ ] A mock-device test completes provisioning and a redeploy
+  - [ ] Unknown packets are logged without payload secrets
+  - [ ] Reconnect after a dropped connection works (test)
+- notes: default topic names only (a non-default `topic_prov` is stored in the module's flash). Clean-room rule as in T1.2.
+
+### T1.6 — RAC TLV codec
+- status: todo
+- deps: -
+- owner: implementer
+- files: core/src/ac/tlv.rs, core/src/ac/mod.rs, core/tests/fixtures/
+- kb: AC — local control options (T1.1 findings: model); Devices (AC)
+- design: -
+- approach: Parse `device_packet` and build `packet` hex TLV for power, mode (cooling-only set; Auto = 3), target temperature (half degrees), fan, light; state query 0x1f5. Typed `AcState` / `AcCommand`.
+- acceptance:
+  - [ ] Round-trip unit tests on fixture packets (fake ids)
+  - [ ] Modes the unit doesn't have (heat) are rejected with a clear error
+  - [ ] Unknown TLV fields are kept/logged, not fatal
+- notes: fields and values from the rethink wiki and our own captures only (clean-room rule as in T1.2); re-check against live packets in T1.9.
+
+### T1.7 — Re-check the router for local DNS
+- status: todo
+- deps: T1.1
+- owner: implementer
+- files: docs/knowledge_base.md, docs/local.md
+- kb: Home network; AC — local control options (T1.1 findings: DNS plan); Open questions (hostname)
+- design: -
+- approach: Walk every page of the router's admin UI with the user (fresh screenshots from the user, or the user's own browser with their approval) looking for a DNS host override, static DNS / local domain, or a hostname-from-DHCP-reservation feature that the AC could resolve. Read-only: change no router setting. Record the result in KB Home network (router identifiers stay out of the repo, as before).
+- acceptance:
+  - [ ] Every admin section checked and listed in the KB (DNS, DHCP, LAN, advanced), with yes/no for a local-name option
+  - [ ] If a local-name option exists: how it would serve our hostname, and whether DHCP-reservation hostnames resolve (`dig @router <name>`)
+  - [ ] Hostname open question updated with the result
+- notes: user asked to double-check the 2026-11-25 screenshots (2026-11-26). Needs the user present.
+
+### T1.8 — Provisioning DNS fallback
+- status: todo
+- deps: T1.3, T1.7
+- owner: implementer
+- files: core/Cargo.toml, core/src/ac/dns.rs, cli/src/ac.rs
+- kb: AC — local control options (T1.1 findings: DNS plan); Home network; Gotchas
+- design: -
+- approach: Only needed if passing apiServer/mqttServer in `getDeviceInfo` does not stop the one-time `common.lgthinq.com` call. hickory-server resolver on the Mac answering `common.lgthinq.com` (and our hostname, if T1.7 found no router option) and forwarding the rest, run only during `controlz ac setup --dns`.
+- acceptance:
+  - [ ] Tests: the resolver answers the overridden names and forwards others
+  - [ ] Whether UDP 53 binds unprivileged on macOS 26 is checked and recorded in the KB
+  - [ ] User-guided router steps (set and then revert "specific DNS server") documented in the KB
+- notes: may be dropped (with the user's OK) if T1.9 shows it is not needed.
+
+### T1.9 — Provision the real AC + `controlz ac status|set`
+- status: todo
+- deps: T1.3, T1.4, T1.5, T1.6, T1.7
+- owner: implementer
+- files: core/src/ac/mod.rs, core/src/ac/controller.rs, cli/src/ac.rs, docs/knowledge_base.md
+- kb: AC — local control options (T1.1 findings); Home network; Devices (AC); Decisions (D4, D12, D20); Open questions (hostname)
+- design: -
+- approach: `controlz ac serve` (HTTPS + MQTT) plus the full setup on the device with the user present, then `controlz ac status|set` over the running server. Hostname order, stopping at the first that works: (1) plain IP in `/route`; (2) a router local name, if T1.7 found one; (3) `<mac-ip>.sslip.io`; (4) user-owned domain; (5) own resolver (T1.8). The user picks before (3)–(5), since they touch D4 or the whole-home DNS.
+- acceptance:
+  - [ ] The AC completes provisioning to the Mac
+  - [ ] `controlz ac status` shows live power, mode and temperature; a `set` changes the unit and the change is read back
+  - [ ] The hostname strategy that worked is recorded as a decision; the procedure and quirks (ping/pong, power cycle after releaseDev) in the KB
+- notes: needs a DHCP reservation for the Mac (and the AC) first. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. Add T1.8 to deps if option 1 fails on the device.
+
 ## P2 — Swift bridge
 Goal: expose the Rust core to Swift with uniffi and a one-command build.
 
 ### T2.1 — uniffi exports (AC)
 - status: todo
-- deps: T1.1, T0.4
+- deps: T1.9, T0.4
 - owner: implementer
 - files: core/src/ffi.rs, core/src/lib.rs
 - kb: Architecture; Decisions (D1)
@@ -124,7 +238,7 @@ Goal: expose the Rust core to Swift with uniffi and a one-command build.
   - [ ] AC functions exported as Swift `async throws`
   - [ ] One tokio runtime owned by the core
   - [ ] Errors map to a single error enum with readable messages; no secrets in error text
-- notes: deps get extended to the AC core tasks once they exist (after T1.1)
+- notes: depends on T1.9 (AC core + CLI verified on the device)
 
 ### T2.2 — Core build script
 - status: todo
@@ -145,7 +259,7 @@ Goal: designer specs for the menu-bar panel, Settings and first-run setup — AC
 
 ### T3.1 — Menu-bar panel spec
 - status: todo
-- deps: T1.1
+- deps: T1.6
 - owner: designer
 - files: docs/design/panel.md
 - kb: Project; macOS platform
@@ -155,11 +269,11 @@ Goal: designer specs for the menu-bar panel, Settings and first-run setup — AC
   - [ ] AC section first: controls the chosen route supports (power, mode, target temperature, fan; current temperature only if readable)
   - [ ] States: loading, unreachable, not set up; for a send-only route, how assumed state is shown
   - [ ] TV section: power, volume/mute, input, apps, D-pad, media keys; TV off (with Turn On), not paired
-- notes: depends on T1.1 because the AC controls depend on the route
+- notes: depends on T1.6 because the AC controls depend on what the codec supports
 
 ### T3.2 — Settings and first-run spec
 - status: todo
-- deps: T1.1
+- deps: T1.9
 - owner: designer
 - files: docs/design/settings.md
 - kb: Project; macOS platform; TV / webOS protocol (Registration)
@@ -469,6 +583,7 @@ Goal: nice-to-haves.
 - 2026-11-26 · T0.4 · done · workspace lints (clippy all deny, pedantic warn, unsafe_code deny), deny.toml, nextest config, .editorconfig, insta + Config snapshot, check.sh full gate (fmt/clippy/nextest/doctests/deny/machete), pre-commit fmt check after privacy check, rust-check.sh delegates to check.sh
 - 2026-11-26 · T0.5 · done · GitHub Actions CI on macos-latest runs scripts/check.sh on push/PR to main; actions pinned by SHA, contents: read; Dependabot dropped (D19)
 - 2026-11-26 · T1.1 · done · AC module probed (ThinQ2, TLS 1.2 CBC only); routes compared; chosen: clean-room Rust local ThinQ2 cloud with vendored OpenSSL 3.6 (D20); T1.2+ proposed in KB
+- 2026-11-26 · T1.2 · done · legacy TLS 1.2 CBC profiles (10 s handshake timeout) + PKI (RSA-2048 CA, server cert with SAN, CSR signing, 0600 key files) on vendored OpenSSL 3.6
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->

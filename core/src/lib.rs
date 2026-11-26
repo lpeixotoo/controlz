@@ -1,6 +1,7 @@
 //! Device control core for Controlz: LG webOS TVs and other LG appliances,
 //! controlled over the local network only (no cloud).
 
+pub mod ac;
 mod config;
 mod error;
 mod secret;
