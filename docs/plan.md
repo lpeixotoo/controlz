@@ -17,7 +17,7 @@
 Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 
 ### T0.1 — Rust toolchain via rustup
-- status: todo
+- status: blocked
 - deps: -
 - owner: implementer
 - files: rust-toolchain.toml, core/Cargo.toml
@@ -28,7 +28,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
   - [ ] rustup stable installed and pinned in `rust-toolchain.toml`
   - [ ] Dependency versions in `core/Cargo.toml` bumped to current releases that resolve and build on it; `reqwest` removed (no ThinQ, D4)
   - [ ] MSRV of every core dependency recorded in the knowledge base (Environment); the pinned toolchain satisfies all of them
-- notes: rustup install approved by the user (2026-11-25)
+- notes: rustup install approved by the user (2026-11-25). BLOCKED 2026-11-25: the coordinator's guard-paths.sh hook also fires inside the implementer subagent, so it cannot edit rust-toolchain.toml / core/Cargo.toml. Toolchain (1.100.0) installed, MSRVs in KB, both files staged + verified in the session scratchpad (staged/). Guard fixed (`--main-only`, commit 5c05f6f, user-approved) but agent hooks load at session start → **restart Claude Code, then resume T0.1**: write the staged files (/private/tmp/claude-501/-Users-lucaspeixoto-Documents-Lucas-Peixoto-controlz/368fb34f-f5eb-4f2e-8fbf-c92b4ae88f65/scratchpad/staged/rust-toolchain.toml and staged/core/Cargo.toml — re-create from the KB/approach if gone), then `cargo build -p controlz_core` (only the E0583 thinq/webos errors expected until T0.2) and review.
 
 ### T0.2 — Workspace + make core/ compile
 - status: todo
@@ -479,3 +479,6 @@ Goal: nice-to-haves.
 - 2026-11-25 · added T0.4 (Rust tooling), T0.5 (CI + Dependabot), T4.6 (Swift tooling); T4.2 deps + T4.6, T2.1 deps + T0.4; `approach` line on every task; KB Architecture + Tooling (D13) · user asked for standard tooling and more technical detail
 - 2026-11-25 · T0.1: record MSRV of every core dependency (not just uniffi/tokio-tungstenite); T1.1: list the route's libraries + MSRVs · AC-first means the AC server's libraries may set the minimum toolchain
 - 2026-11-25 · plan approved by the user (D9 and D10 confirmed) · bootstrap complete
+- 2026-11-25 · T0.1 blocked: coordinator path-guard hook applies to subagents · found during the first implementer run
+- 2026-11-25 · coordinator path guard now `--main-only` (skips tool calls carrying `agent_id`); subagents keep their own guards · user-approved fix for the T0.1 block
+- 2026-11-25 · T0.1 blocked again: hook fix only takes effect after a session restart · second implementer run

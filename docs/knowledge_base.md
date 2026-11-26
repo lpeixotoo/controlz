@@ -10,10 +10,26 @@
 
 ## Environment
 - Machine: Apple Silicon Mac, macOS 26 (Darwin 25.5). (source: `uname`/`swift --version`, 2026-11-25)
-- Rust: `cargo 1.85.1` from Homebrew (`/opt/homebrew/bin/cargo`). **This may be too old for current crates** (uniffi, tokio-tungstenite, reqwest MSRVs move fast). P0 should check MSRVs and likely switch to `rustup` stable.
+- Rust: ~~`cargo 1.85.1` from Homebrew is the toolchain~~ (corrected 2026-11-25: Homebrew cargo 1.85.1 is still installed but unused; the project uses rustup 1.100.0, see below).
 - Swift 6.1, Xcode 16.3. No `xcodegen`/`tuist` installed.
 - **Minimum supported macOS: 26** (D6). Installing rustup approved by the user (2026-11-25). This Mac runs macOS 26.5.2 (source: `sw_vers`, 2026-11-25).
 - `jq` available at `/usr/bin/jq` (used by hooks).
+- **Rust toolchain (T0.1):** rustup 1.29.3 (official `sh.rustup.rs` installer, `--no-modify-path`), toolchain **1.100.0** (`rustc 1.100.0 (0ef1bc386 2026-11-09)`, `cargo 1.100.0`), current stable on 2026-11-25. Pinned in `rust-toolchain.toml` (`channel = "1.100.0"`, `rustfmt` + `clippy`). (source: `rustc --version`, `static.rust-lang.org/dist/channel-rust-stable.toml`, 2026-11-25)
+  - PATH: `~/.zshrc` ends with `export PATH="$HOME/.cargo/bin:$PATH"`. It has to be the **last** PATH change, because `.zshrc` prepends `/opt/homebrew/bin` near the top. Homebrew `rust` 1.85.1 stays installed but is shadowed. Homebrew's `cargo` ignores `rust-toolchain.toml` (only the rustup proxies in `~/.cargo/bin` honor it). Check with `which cargo` → `~/.cargo/bin/cargo`. GUI processes (Xcode build phases) don't read `.zshrc`, so scripts they run should call `~/.cargo/bin/cargo` or set PATH themselves. (source: `zsh -i -c 'which -a cargo'`, 2026-11-25)
+  - cargo 1.100 has a built-in manifest lint `cargo::unused_dependencies` (warn by default). It flags declared-but-unused deps at build time. (source: build output, 2026-11-25)
+- **Core dependency MSRVs** (`rust_version` from `https://crates.io/api/v1/crates/<name>`; 2026-11-25). The pin 1.100.0 satisfies all of them:
+  | crate | version | MSRV |
+  |---|---|---|
+  | uniffi (`tokio`, `cli`) | 0.33.0 | 1.95.0, not declared in Cargo.toml (`rust_version: null`); taken from uniffi CI `prepare-rust-min-version: rustup override set 1.95.0` at tag `v0.33.0` (`.circleci/config.yml`); uniffi itself builds with 1.99.0 (`rust-toolchain.toml`); policy `docs/policies/rust-versions.md` |
+  | tokio | 1.54.1 | 1.85 |
+  | tokio-tungstenite (`native-tls`) | 0.30.0 | 1.85 |
+  | native-tls | 0.2.18 | 1.80 |
+  | futures-util | 0.3.34 | 1.71 |
+  | serde | 1.0.229 | 1.56 |
+  | serde_json | 1.0.154 | 1.71 |
+  | thiserror | 2.0.21 | 1.77 |
+  - Highest declared MSRV in the whole resolved graph (133 packages, `cargo metadata`): **1.91** (`cargo-platform` 0.3.3, pulled in by uniffi's `cli` feature via `cargo_metadata`); then 1.88 (`askama` 0.16.x, `textwrap` 0.16.4). 29 packages declare none (all `uniffi_*` among them).
+  - Removed in T0.1: `reqwest` (ThinQ only, D4), `uuid` and `base64` (no users in `core/src`).
 
 ## Devices
 - **All appliances are LG** (source: user, 2026-11-25).
@@ -167,6 +183,7 @@ Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
 - Considered, not adopted: SwiftFormat (nicklockwood) — swift-format is bundled and sufficient; cargo-udeps — needs nightly, cargo-machete covers it; cargo-audit — cargo-deny covers advisories.
 
 ## Gotchas
+- Agent-definition hooks (`.claude/agents/*.md` frontmatter) are loaded when a session starts; editing them takes effect only after restarting Claude Code. Hook input carries `agent_id`/`agent_type` for subagent tool calls, none for the main session (verified 2026-11-25).
 - An app that **listens** for connections (the AC server) triggers the macOS application-firewall "accept incoming connections" prompt when the firewall is on. Ad-hoc signed builds change identity every build → the prompt can repeat during development. Stable signing (T7.3) fixes it.
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
 - `core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml` (uniffi 0.29, tokio-tungstenite 0.26, reqwest 0.12; versions unverified against the toolchain), `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).
