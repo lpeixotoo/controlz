@@ -21,3 +21,9 @@ bindgen = ["uniffi/cli"]
 uniffi = { workspace = true, features = ["tokio"] }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

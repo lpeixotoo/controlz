@@ -10,6 +10,8 @@ pub enum ControlError {
     Device { message: String },
     #[error("Invalid input: {message}")]
     Invalid { message: String },
+    #[error("Config error: {message}")]
+    Config { message: String },
 }
 
 impl ControlError {
@@ -21,6 +23,12 @@ impl ControlError {
 
     pub(crate) fn invalid(e: impl std::fmt::Display) -> Self {
         Self::Invalid {
+            message: e.to_string(),
+        }
+    }
+
+    pub(crate) fn config(e: impl std::fmt::Display) -> Self {
+        Self::Config {
             message: e.to_string(),
         }
     }

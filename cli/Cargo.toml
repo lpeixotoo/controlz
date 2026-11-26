@@ -8,3 +8,10 @@ publish.workspace = true
 [[bin]]
 name = "controlz"
 path = "src/main.rs"
+
+[dependencies]
+controlz_core = { path = "../core" }
+clap = { workspace = true }
+security-framework = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

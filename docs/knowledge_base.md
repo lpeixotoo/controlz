@@ -32,6 +32,8 @@
   | thiserror | 2.0.21 | 1.77 |
   - Highest declared MSRV in the whole resolved graph (133 locked dependency packages plus `controlz_core`, `cargo metadata`): **1.91** (`cargo-platform` 0.3.3, pulled in by uniffi's `cli` feature via `cargo_metadata`; since T0.2 only with `--features bindgen`, not in the shipped staticlib); then 1.88 (`askama` 0.16.x, `textwrap` 0.16.4). 29 packages declare none (all `uniffi_*` among them).
   - Removed in T0.1: `reqwest` (ThinQ only, D4), `uuid` and `base64` (no users in `core/src`).
+  - Added in T0.3 (`rust_version` from crates.io API, 2026-11-25): core `toml` 1.2.3 (MSRV 1.85), core `tracing` 0.1.44 (1.65.0); CLI only (D9) `clap` 4.6.10 with `derive` (1.85), `security-framework` 3.7.0 (1.85), `tracing-subscriber` 0.3.23 with `default-features = false`, features `fmt`, `std`, `ansi` (1.65.0; also a core dev-dependency for the log-redaction test). Highest declared MSRV in the resolved graph (117 packages) is still 1.91 (`cargo-platform`).
+  - Removed in T0.3 from `[workspace.dependencies]` (no member used them; re-add when TV work starts): `tokio-tungstenite`, `native-tls`, `futures-util`, `serde_json`. Their table rows above are kept as the versions chosen in T0.1.
 
 ## Devices
 - **All appliances are LG** (source: user, 2026-11-25).
@@ -139,6 +141,8 @@ Source: LG's official SDK `pythinqconnect` (Apache-2.0) — https://github.com/t
 - The multicast entitlement is not required on macOS.
 - Menu-bar-only app: `LSUIElement = YES`; SwiftUI `MenuBarExtra` with `.menuBarExtraStyle(.window)` gives a popover-like panel.
 - Secrets in Keychain (`kSecClassGenericPassword`).
+- Keychain layout (D10, T0.3): generic passwords with service **`dev.controlz`** and account = secret name (today only `tv.client-key`). Tests use service `dev.controlz.test`. Written via `security_framework::passwords::{set,get,delete}_generic_password`; `errSecItemNotFound` (-25300) means "not set". Code: `cli/src/secrets.rs`. (source: T0.3 implementation, 2026-11-25)
+- Config file (D10, T0.3): `$HOME/Library/Application Support/Controlz/config.toml`, path from `std::env::home_dir()`; read/written by `controlz_core::Config` (`core/src/config.rs`) so the app reuses it. Keys `tv.host`, `tv.mac` (MAC normalised to lowercase colon form); `config set` rejects unknown keys; unknown keys/tables in the file are kept on load → save and logged as a warning (names only), so older builds keep newer settings; saves go through a pid-unique temp file + rename (temp removed on failure; concurrent writers: last one wins, no lock). `config secret set` reads only from piped stdin and refuses a terminal (it would echo). (source: T0.3 implementation, 2026-11-25)
 
 ## Decisions
 - **D1** · 2026-11-25 · Rust core + thin SwiftUI shell, bridged with uniffi · native look and a small menu-bar footprint for the UI, Rust for the protocol logic; pure-Rust AppKit (objc2) is too tedious, Tauri carries a WebView · status: active
@@ -194,6 +198,7 @@ Versions checked 2026-11-25 (crates.io / Homebrew / GitHub).
 - The GitHub repo is public. A pre-commit hook (`.githooks/pre-commit`, enabled with `git config core.hooksPath .githooks`) blocks LAN IPs, MAC addresses, personal emails and `thinqpat_` tokens; mark obvious fakes with `privacy:allow`.
 - ~~`core/` contains a **partial, uncompiled** start from before the workflow existed: `Cargo.toml`, `uniffi-bindgen.rs`, `src/lib.rs` (declares `thinq`/`webos` modules that don't exist yet), `src/wol.rs` (Wake-on-LAN + tests). Kept (D7); `reqwest` and the `thinq` module are no longer needed (D4).~~ (corrected 2026-11-25: T0.2 made `core/` compile inside the root workspace; `thinq` removed, `webos` is a stub, `ControlError` lives in `src/error.rs`.)
 - The TV client-key is a secret: never in code, fixtures, logs or docs.
+- Keychain items written by the unsigned/ad-hoc-signed `controlz` CLI land in the login keychain with an access list tied to that binary. A rebuilt binary (new identity) or the app reading the same item may trigger a "wants to use your confidential information" prompt until signing is stable (T7.3). The data-protection keychain would need entitlements, which a plain CLI does not have. (source: Apple Keychain Services docs on legacy keychain ACLs; not yet observed here, the Keychain test is `#[ignore]`d, 2026-11-25)
 - The TV gets its IP by DHCP; the router supports DHCP reservations — the user should reserve the TV's (and later the AC's and the AC-server host's) IP so configured addresses stay valid (until SSDP discovery, T7.1).
 - macOS Local Network permission applies to every app that reaches the LAN — including the terminal running the CLI and the user's browser. Denied → instant "No route to host" while the internet still works.
 

@@ -46,7 +46,7 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - notes: T0.2 review PASS (2026-11-25); open: 5 "unused workspace dependency" warnings (futures-util, native-tls, serde, serde_json, tokio-tungstenite) — decide accept / drop pins / allow lint; follow-ups: align .claude/scripts/rust-check.sh with scripts/check.sh (--all-features) in T0.4; re-check MSRVs when T1.x re-adds the pruned crates. Earlier, from T0.1 review: (1) put uniffi's `cli` feature behind a crate feature (e.g. `bindgen = ["uniffi/cli"]` + `required-features` on the `uniffi-bindgen` bin) so the bindgen stack stays out of the shipped staticlib; (2) fix the lib.rs crate doc that still mentions ThinQ cloud (D4); (3) move core/Cargo.lock to the workspace root; (4) set `rust-version` in `[workspace.package]` (≥ 1.95 for uniffi; 1.100 matches the pin); (5) decide how to handle cargo 1.100's `unused_dependencies` lint for deps not used yet.
 
 ### T0.3 — CLI skeleton, config and Keychain secrets
-- status: todo
+- status: done
 - deps: T0.2
 - owner: implementer
 - files: cli/Cargo.toml, cli/src/main.rs, cli/src/config.rs, cli/src/secrets.rs
@@ -54,10 +54,10 @@ Goal: a working toolchain, a compiling workspace and a CLI to test devices with.
 - design: -
 - approach: `clap` derive with subcommand groups `ac`, `tv`, `config`. Config: `serde` + `toml`, struct with optional sections per device, stored at `~/Library/Application Support/Controlz/config.toml` (core owns read/write so the app reuses it). Secrets: `security-framework` generic passwords, one service name (proposal `dev.controlz`), wrapped in a `Secret` newtype whose `Debug`/`Display` print `***`. `tracing-subscriber` behind `-v`.
 - acceptance:
-  - [ ] `controlz --help` lists `ac`, `tv` and `config` command groups (ac/tv may be stubs)
-  - [ ] `controlz config set <key> <value>` writes `~/Library/Application Support/Controlz/config.toml`; nothing is read from the repo
-  - [ ] Secrets are read/written in the macOS Keychain under one service name recorded in the knowledge base
-  - [ ] A test proves secret values never appear in `Debug` output or logs
+  - [x] `controlz --help` lists `ac`, `tv` and `config` command groups (ac/tv may be stubs)
+  - [x] `controlz config set <key> <value>` writes `~/Library/Application Support/Controlz/config.toml`; nothing is read from the repo
+  - [x] Secrets are read/written in the macOS Keychain under one service name recorded in the knowledge base (live Keychain round trip not run, user choice)
+  - [x] A test proves secret values never appear in `Debug` output or logs
 - notes: from T0.2: remove `[workspace.dependencies]` entries no member uses (they print "unused workspace dependency" warnings; at T0.2 close: futures-util, native-tls, serde, serde_json, tokio-tungstenite); keep any this task starts using; later tasks re-add theirs.
 
 ### T0.4 — Rust quality tooling
@@ -466,6 +466,7 @@ Goal: nice-to-haves.
 - 2026-11-25 · bootstrap · plan v4 approved by the user (incl. D9, D10) · -
 - 2026-11-25 · T0.1 · done · rustup + Rust 1.100.0 pinned; core deps bumped to latest (edition 2024, reqwest/uuid/base64 removed); MSRV table in KB · 95ede0e
 - 2026-11-25 · T0.2 · done · root workspace (core + cli stub), core trimmed to uniffi/tokio/thiserror, bindgen feature-gated, error.rs, webos stub, scripts/check.sh · 8713341
+- 2026-11-25 · T0.3 · done · controlz CLI (clap: ac/tv stubs, config set/get/show/path, config secret set/status/delete via piped stdin), Config + Secret in core, Keychain service dev.controlz, unknown config keys kept, -v tracing
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -492,3 +493,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · KB: T0.2 Environment line on unused workspace deps (implementer); core/ Gotcha struck as corrected; uniffi `cli` MSRV rows annotated as bindgen-only · T0.2 review kb_conflicts
 - 2026-11-25 · T0.2 done; T0.3 notes: drop unused [workspace.dependencies] pins · user approved close; user chose to fold the warning cleanup into the next task
 - 2026-11-25 · kb: D17 (coordinator thread stays lean: no large skills/docs, targeted reads, short output) · cost evaluation; user chose this option only
+- 2026-11-25 · T0.3 done · user approved close

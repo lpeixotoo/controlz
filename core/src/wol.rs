@@ -23,7 +23,7 @@ pub async fn send_magic_packet(mac: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_mac(mac: &str) -> Result<[u8; 6]> {
+pub(crate) fn parse_mac(mac: &str) -> Result<[u8; 6]> {
     let parts: Vec<&str> = mac.split([':', '-']).collect();
     if parts.len() != 6 {
         return Err(ControlError::invalid(format!("bad MAC address: {mac}")));
