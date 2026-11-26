@@ -9,7 +9,7 @@ hooks:
     - matcher: "Edit|Write|NotebookEdit"
       hooks:
         - type: command
-          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-paths.sh docs/ CLAUDE.md README.md .claude/ @scratchpad"
+          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-paths.sh --main-only docs/ CLAUDE.md README.md .claude/ @scratchpad"
 ---
 
 You are the **coordinator** of Controlz, a macOS menu-bar app (Rust core + SwiftUI shell) that controls LG appliances (webOS TV, ThinQ air conditioner).
