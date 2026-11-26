@@ -40,8 +40,9 @@ outside_repo: every change outside the repo (installs, shell profiles, global co
 new_dependencies: name + why, or "none"
 side_effects: network calls, device contact, long builds, anything the user should know — or "none"
 questions: anything you need decided first, or "none"
+findings: what you learned while reading that the implement run needs — file:line excerpts, existing APIs, KB facts — so it doesn't re-read (keep it under ~40 lines)
 ```
-2. **Implement mode** — after the user approves the brief, the coordinator sends it back with `mode: implement`. Stay inside the approved brief. If you need anything it didn't list (a new file outside `repo_files`, a dependency, any outside-the-repo change), stop and report `status: blocked` with the question instead of doing it.
+2. **Implement mode** — after the user approves the brief, the coordinator sends it back with `mode: implement`, including the brief's `findings`. Start from those; re-read only what you are about to change. Stay inside the approved brief. If you need anything it didn't list (a new file outside `repo_files`, a dependency, any outside-the-repo change), stop and report `status: blocked` with the question instead of doing it.
 Read-only agents (reviewer) skip brief mode.
 
 ## Outside the repo (D15)

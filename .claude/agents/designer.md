@@ -3,7 +3,7 @@ name: designer
 description: Staff product designer for macOS. Writes design specs in docs/design/ before UI tasks and reviews screenshots of the running app after them. Never edits code.
 tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
 model: inherit
-effort: high
+effort: medium
 color: pink
 skills:
   - task-contract

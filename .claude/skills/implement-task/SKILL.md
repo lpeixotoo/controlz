@@ -18,6 +18,9 @@ You are the coordinator. You never write product code here; you brief subagents,
 First dispatch `designer` with `mode: brief` and show the user its brief (D16); continue only on approval. Then dispatch `designer` in spec mode (`mode: implement`) with the task block, the relevant knowledge-base excerpts and the `macos-design` template. Show the user the spec summary and wireframe and ask for approval. On approval, set the spec's `status: approved`, mark the task `done` and go to step 6. Implementation tasks never start from an unapproved spec.
 
 ## 3. Implement
+### Lean briefs
+Paste the knowledge-base sections the task needs (its `kb` headings, plus only the **Conventions**/**Gotchas** lines that apply) into the brief as excerpts, instead of asking the agent to read the whole knowledge base. Agents open other sections only when the excerpts aren't enough.
+
 ### 3a. Brief (D16)
 Dispatch `implementer` with the brief below and `Mode: brief`. Show the user its returned brief as a short summary: plan, files, **every outside-the-repo change (exact command/line)**, new dependencies, side effects, questions. Ask for approval. Only then set `status: in_progress` and continue. Changes outside the repo that the user didn't approve never happen (D15).
 
@@ -25,9 +28,10 @@ Dispatch `implementer` with the brief below and `Mode: brief`. Show the user its
 Dispatch `implementer` again with `Mode: implement` and the approved brief pasted in:
 ```
 Mode: brief | implement
-Approved brief: <the brief the user approved, in implement mode>
+Approved brief: <the brief the user approved, including its findings, in implement mode>
+KB excerpts: <the sections this task needs, pasted>
 Task: <full task block, verbatim>
-Read first: docs/knowledge_base.md → <headings>; <design spec path, if any>
+Read first: <design spec path, if any>; other knowledge-base sections only if the excerpts aren't enough
 Context: <anything the plan notes or the user said that matters>
 Constraints: follow task-contract; do not commit; do not edit docs/plan.md
 Return: the task-contract report

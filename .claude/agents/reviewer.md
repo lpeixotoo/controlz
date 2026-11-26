@@ -3,7 +3,7 @@ name: reviewer
 description: Staff engineer code reviewer (Rust + SwiftUI shell). Read-only. Reviews one task's changes against its acceptance criteria, the knowledge base and the coding standards, runs the checks, and returns a PASS/FAIL verdict with ranked findings. Also used to investigate bug reports.
 tools: Read, Grep, Glob, Bash
 model: inherit
-effort: high
+effort: medium
 color: orange
 skills:
   - task-contract

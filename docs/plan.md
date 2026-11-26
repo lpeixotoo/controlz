@@ -486,3 +486,5 @@ Goal: nice-to-haves.
 - 2026-11-25 · KB: removed the hook-reload gotcha (user: not needed); T0.1 resumed after session restart · user request
 - 2026-11-25 · D14: no task commits or status moves past in_review without the user's OK; implement-task skill updated; rust-check hook → reviewer script (b2b0492); KB Gotchas core/ line corrected; T0.2 notes get T0.1 review follow-ups · user instruction + T0.1 review
 - 2026-11-25 · D15 (no outside-repo changes without prior approval) and D16 (editing agents return a brief for approval before working); task-contract, implementer, designer, implement-task and CLAUDE.md updated · user instruction after T0.1 touched ~/.zshrc
+- 2026-11-25 · KB: D4 wording updated to the current AC route options; D11 moved back into numeric order · user OK
+- 2026-11-25 · agents' effort high → medium; lean briefs (coordinator pastes KB excerpts; brief runs return `findings` for the implement run) · user request to cut token usage
