@@ -143,28 +143,32 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - status: todo
 - deps: T1.2
 - owner: implementer
-- files: core/Cargo.toml, core/src/ac/cloud.rs, core/src/ac/mod.rs, core/tests/fixtures/
-- kb: AC — local control options (T1.1 findings: local cloud side, DNS plan); Decisions (D12, D20); Gotchas (firewall prompt)
+- files: core/Cargo.toml, core/src/ac/cloud.rs, core/src/ac/mod.rs, core/src/ac/tls.rs, core/src/ac/pki.rs, core/tests/fixtures/
+- kb: AC — local control options (T1.1 findings: local cloud side, DNS plan); Decisions (D12, D20); Gotchas (firewall prompt, AC server security)
 - design: -
 - approach: hyper 1.x over tokio-openssl on 443 (unprivileged bind works on macOS 26). `/route` returns apiServer/mqttServer built from a configured host (IP or hostname, so T1.9 can try each strategy), `/route/certificate[?name=…]`, `POST /device/<uuid>/certificate` signs the CSR with the T1.2 CA.
 - acceptance:
   - [ ] Snapshot tests of each response
   - [ ] A mock-device test fetches route → certs → submits a CSR → gets a cert chaining to our CA
   - [ ] The advertised host is configurable (plain IP or DNS name); nothing device-specific is hard-coded
-- notes: clean-room rule as in T1.2.
+  - [ ] Hardening: the HTTPS server runs only for a provisioning session (started/stopped explicitly, not always on) and binds to the configured LAN interface address, not 0.0.0.0
+  - [ ] Our servers use an ECDHE-only suite list (`ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA`), separate from the module-client list; the full list stays available as a documented fallback until T1.9 confirms on the device
+  - [ ] `pki::server_is_current` treats a `verify()` error as "not current" (re-issue) instead of a hard error (T1.2 review nit)
+- notes: clean-room rule as in T1.2. Hardening items from the T1.2 security discussion (2026-11-26).
 
 ### T1.5 — Single-device MQTT broker + provisioning
 - status: todo
 - deps: T1.2
 - owner: implementer
 - files: core/src/ac/mqtt.rs, core/src/ac/mod.rs, core/tests/fixtures/
-- kb: AC — local control options (T1.1 findings: local cloud side, Crates); Decisions (D20)
+- kb: AC — local control options (T1.1 findings: local cloud side, Crates); Decisions (D20); Gotchas (AC server security)
 - design: -
 - approach: In-crate MQTT 3.1.1 subset (CONNECT/SUBSCRIBE/PUBLISH QoS 0–1/PING) over TLS on 8883 with client-cert check, one client (clientId = uuid). Handles preDeploy/deploy → completeProvisioning with the default topic names, and the ack; `req_timesync` reply decided from captures.
 - acceptance:
   - [ ] A mock-device test completes provisioning and a redeploy
   - [ ] Unknown packets are logged without payload secrets
   - [ ] Reconnect after a dropped connection works (test)
+  - [ ] Hardening: a client without a cert signed by our CA is rejected in the TLS handshake, before any MQTT byte is parsed (test); reads and writes after the handshake have timeouts; the listener binds to the configured LAN interface address
 - notes: default topic names only (a non-default `topic_prov` is stored in the module's flash). Clean-room rule as in T1.2.
 
 ### T1.6 — RAC TLV codec
@@ -221,6 +225,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
   - [ ] The AC completes provisioning to the Mac
   - [ ] `controlz ac status` shows live power, mode and temperature; a `set` changes the unit and the change is read back
   - [ ] The hostname strategy that worked is recorded as a decision; the procedure and quirks (ping/pong, power cycle after releaseDev) in the KB
+  - [ ] The ECDHE-only server suites (T1.4) work with the real AC; if not, the fallback list is used and the reason recorded in the KB
 - notes: needs a DHCP reservation for the Mac (and the AC) first. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. Add T1.8 to deps if option 1 fails on the device.
 
 ## P2 — Swift bridge
@@ -565,6 +570,20 @@ Goal: nice-to-haves.
   - [ ] Signed with Developer ID and notarized
   - [ ] Opens on another Mac without Gatekeeper warnings
 - notes: needs an Apple Developer account
+
+### T7.4 — Sandbox the AC server
+- status: todo
+- deps: T7.3
+- owner: implementer
+- files: app/, scripts/bundle-app.sh, core/src/ac/pki.rs, core/src/config.rs
+- kb: macOS platform; Gotchas (AC server security); Decisions (D10, D12)
+- design: -
+- approach: Run the in-app AC server under the macOS App Sandbox (entitlements `com.apple.security.network.server` + `network.client`), so a compromised server can't read the user's files. The sandbox moves `~/Library/Application Support` into the app's container, which breaks the CLI/app shared config and PKI files (D10): solve with an app-group container both use, or have the app own the server and the CLI talk to it. Decide in the brief.
+- acceptance:
+  - [ ] The signed app runs sandboxed (`codesign -d --entitlements -` shows app-sandbox) and the AC server still provisions and controls the AC
+  - [ ] CLI and app still share config and PKI (or the chosen alternative is recorded as a decision)
+  - [ ] A sandboxed process can't read a file outside its container (manual check, noted in the KB)
+- notes: from the T1.2 security discussion (2026-11-26); may touch D10, so the brief asks the user first.
 
 ---
 
