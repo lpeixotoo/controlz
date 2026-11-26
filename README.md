@@ -53,7 +53,7 @@ You rarely need the slash commands. Talk to the coordinator in plain language ("
 ### Guardrails (hooks)
 
 - The coordinator and designer are blocked from editing outside their folders (`.claude/hooks/guard-paths.sh`).
-- After the implementer edits Rust, `cargo fmt` and `cargo check` run automatically and errors go straight back to it (`.claude/hooks/rust-check.sh`).
+- `.claude/scripts/rust-check.sh` runs the Rust checks (fmt, clippy `-D warnings`, tests) read-only with rustup's toolchain. The reviewer runs it on every review; the implementer runs it before reporting.
 - Each session starts with a one-line plan summary and a warning about tasks left half-done (`scripts/plan-status.sh --short`).
 
 ## Getting started
@@ -92,6 +92,7 @@ scripts/plan-status.sh     plan parser used by hooks and /status
   settings.json            default agent, permissions, SessionStart hook
   agents/                  coordinator, implementer, reviewer, designer
   skills/                  planning, execution and reference skills
-  hooks/                   guard-paths.sh, rust-check.sh
+  hooks/                   guard-paths.sh
+  scripts/                 rust-check.sh
 .githooks/pre-commit       blocks private data from commits
 ```
