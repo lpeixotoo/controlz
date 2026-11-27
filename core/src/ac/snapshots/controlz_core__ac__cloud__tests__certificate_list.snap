@@ -1,0 +1,12 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&get(&s, \"/route/certificate\", None))"
+---
+HTTP 200
+{
+  "result": [
+    "common-server",
+    "aws-iot"
+  ],
+  "resultCode": "0000"
+}

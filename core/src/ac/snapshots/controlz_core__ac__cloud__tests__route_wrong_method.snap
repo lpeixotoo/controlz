@@ -1,0 +1,9 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&s.respond(&Method::POST, \"/route\", None, b\"\"))"
+---
+HTTP 404
+{
+  "result": null,
+  "resultCode": "0404"
+}

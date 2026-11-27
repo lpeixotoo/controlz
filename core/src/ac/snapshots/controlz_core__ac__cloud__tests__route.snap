@@ -1,0 +1,12 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&get(&session(), \"/route\", None))"
+---
+HTTP 200
+{
+  "result": {
+    "apiServer": "https://controlz.test:443",
+    "mqttServer": "ssl://controlz.test:8883"
+  },
+  "resultCode": "0000"
+}

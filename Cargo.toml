@@ -21,6 +21,10 @@ tracing = "0.1.44"
 openssl = { version = "0.10.82", features = ["vendored"] }
 openssl-sys = "0.9.118"
 tokio-openssl = "0.6.5"
+# AC local cloud HTTPS server (T1.4).
+hyper = { version = "1.13.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
 # CLI only (D9): keep out of controlz_core.
 clap = { version = "4.6.10", features = ["derive"] }
 security-framework = "3.7.0"

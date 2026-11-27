@@ -140,7 +140,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: the module stores a `registered` flag after provisioning that only a Wi-Fi reset clears — so no provisioning before T1.4/T1.5 exist. Whether `getDeviceInfo` persists anything is unverified: note what the brief plans to send and get the user's OK first. Clean-room rule as in T1.2. Device run by the user (getDeviceInfo only, 2026-11-27): modelName RAC_056905_WW confirmed, isReg Y. Closed with the user's OK (2026-11-27).
 
 ### T1.4 — Local cloud HTTPS server
-- status: todo
+- status: done
 - deps: T1.2
 - owner: implementer
 - files: core/Cargo.toml, core/src/ac/cloud.rs, core/src/ac/mod.rs, core/src/ac/tls.rs, core/src/ac/pki.rs, core/tests/fixtures/
@@ -148,18 +148,18 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - design: -
 - approach: hyper 1.x over tokio-openssl on 443 (unprivileged bind works on macOS 26). `/route` returns apiServer/mqttServer built from a configured host (IP or hostname, so T1.9 can try each strategy), `/route/certificate[?name=…]`, `POST /device/<uuid>/certificate` signs the CSR with the T1.2 CA. The server is started for one provisioning session with the expected uuid (from T1.3's `getDeviceInfo`); certificate signing is tied to that uuid.
 - acceptance:
-  - [ ] Snapshot tests of each response
-  - [ ] A mock-device test fetches route → certs → submits a CSR → gets a cert chaining to our CA
-  - [ ] The advertised host is configurable (plain IP or DNS name); nothing device-specific is hard-coded
-  - [ ] Hardening: the HTTPS server runs only for a provisioning session (started/stopped explicitly, not always on) and binds to the configured LAN interface address, not 0.0.0.0
-  - [ ] Our servers use an ECDHE-only suite list (`ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA`), separate from the module-client list; the full list stays available as a documented fallback until T1.9 confirms on the device
-  - [ ] `pki::server_is_current` treats a `verify()` error as "not current" (re-issue) instead of a hard error (T1.2 review nit)
-  - [ ] CSR signing is tied to the session: `POST /device/<uuid>/certificate` signs only when `<uuid>` equals the session's expected uuid and the CSR's CN equals it too, at most once per session; any other request gets an error and is logged without the CSR body (tests: wrong uuid, CN mismatch, second CSR)
-  - [ ] `sign_csr` caps validity (≤ 825 days) and accepts only RSA ≥ 2048 or EC P-256 keys (tests)
-  - [ ] Client certs are signed by a separate client-issuing CA that `/route/certificate` never returns, so a client cert can't pass as our server cert even if the module ignores EKU; if the device rejects this in T1.9, fall back to one CA and record why in the KB
-  - [ ] Our CA has `pathlen:0` in its basic constraints (test); name constraints are tried on the real module in T1.9, not assumed
-  - [ ] `server_acceptor` drops `ALLOW_UNSAFE_LEGACY_RENEGOTIATION` (test: a client renegotiation attempt is refused); the flag stays a documented fallback until T1.9
-- notes: clean-room rule as in T1.2. Hardening items from the T1.2 security discussion (2026-11-26). CSR binding, client CA, `pathlen:0` and renegotiation items from the 2026-11-26 security review (findings 1–3); no module is enrolled yet, so changing the CA layout orphans nothing.
+  - [x] Snapshot tests of each response
+  - [x] A mock-device test fetches route → certs → submits a CSR → gets a cert chaining to our CA
+  - [x] The advertised host is configurable (plain IP or DNS name); nothing device-specific is hard-coded
+  - [x] Hardening: the HTTPS server runs only for a provisioning session (started/stopped explicitly, not always on) and binds to the configured LAN interface address, not 0.0.0.0
+  - [x] Our servers use an ECDHE-only suite list (`ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA`), separate from the module-client list; the full list stays available as a documented fallback until T1.9 confirms on the device
+  - [x] `pki::server_is_current` treats a `verify()` error as "not current" (re-issue) instead of a hard error (T1.2 review nit)
+  - [x] CSR signing is tied to the session: `POST /device/<uuid>/certificate` signs only when `<uuid>` equals the session's expected uuid and the CSR's CN equals it too, at most once per session; any other request gets an error and is logged without the CSR body (tests: wrong uuid, CN mismatch, second CSR)
+  - [x] `sign_csr` caps validity (≤ 825 days) and accepts only RSA ≥ 2048 or EC P-256 keys (tests)
+  - [x] Client certs are signed by a separate client-issuing CA that `/route/certificate` never returns, so a client cert can't pass as our server cert even if the module ignores EKU; if the device rejects this in T1.9, fall back to one CA and record why in the KB
+  - [x] Our CA has `pathlen:0` in its basic constraints (test); name constraints are tried on the real module in T1.9, not assumed
+  - [x] `server_acceptor` drops `ALLOW_UNSAFE_LEGACY_RENEGOTIATION` (test: a client renegotiation attempt is refused); the flag stays a documented fallback until T1.9
+- notes: clean-room rule as in T1.2. Hardening items from the T1.2 security discussion (2026-11-26). CSR binding, client CA, `pathlen:0` and renegotiation items from the 2026-11-26 security review (findings 1–3); no module is enrolled yet, so changing the CA layout orphans nothing. Closed with the user's OK (2026-11-26).
 
 ### T1.5 — Single-device MQTT broker + provisioning
 - status: todo
@@ -610,6 +610,7 @@ Goal: nice-to-haves.
 - 2026-11-26 · T1.1 · done · AC module probed (ThinQ2, TLS 1.2 CBC only); routes compared; chosen: clean-room Rust local ThinQ2 cloud with vendored OpenSSL 3.6 (D20); T1.2+ proposed in KB
 - 2026-11-26 · T1.2 · done · legacy TLS 1.2 CBC profiles (10 s handshake timeout) + PKI (RSA-2048 CA, server cert with SAN, CSR signing, 0600 key files) on vendored OpenSSL 3.6
 - 2026-11-27 · T1.3 · done · SoftAP setup client (JSON stream splitter, typed setup messages, ping/pong, bounded timeouts) + `controlz ac setup --info-only`; provisioning commands unreachable from the CLI; device run confirmed modelName RAC_056905_WW
+- 2026-11-26 · T1.4 · done · session-scoped local cloud HTTPS server (hyper 1 over legacy TLS: /route, /route/certificate, CSR signing tied to the session uuid, once per session); ECDHE-only server suites, no renegotiation; separate client CA, pathlen:0, sign_csr ≤825 days + RSA≥2048/P-256
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -640,3 +641,4 @@ Goal: nice-to-haves.
 - 2026-11-26 · T0.4 done · user approved close
 - 2026-11-26 · T1.1 done · user approved close
 - 2026-11-27 · T1.3 done · user approved close
+- 2026-11-26 · T1.4 done · user approved close

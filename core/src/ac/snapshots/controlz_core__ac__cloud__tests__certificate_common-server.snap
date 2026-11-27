@@ -1,0 +1,11 @@
+---
+source: core/src/ac/cloud.rs
+expression: snapshot_text(&reply)
+---
+HTTP 200
+{
+  "result": {
+    "certificatePem": "<pem>"
+  },
+  "resultCode": "0000"
+}

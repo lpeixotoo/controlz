@@ -1,0 +1,9 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&post(&s, \"11111111-fake-1111-1111-111111111111\", &csr()))"
+---
+HTTP 403
+{
+  "result": null,
+  "resultCode": "0403"
+}

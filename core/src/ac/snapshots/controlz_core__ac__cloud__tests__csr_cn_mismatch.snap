@@ -1,0 +1,9 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&post(&s, UUID,\n&csr_pem(&p256_key(), &[\"11111111-fake-1111-1111-111111111111\"])))"
+---
+HTTP 400
+{
+  "result": null,
+  "resultCode": "0400"
+}

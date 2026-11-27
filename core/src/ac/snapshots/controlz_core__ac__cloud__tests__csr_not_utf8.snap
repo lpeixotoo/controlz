@@ -1,0 +1,9 @@
+---
+source: core/src/ac/cloud.rs
+expression: "snapshot_text(&s.respond(&Method::POST, &post_path(UUID), None,\n&[0xff, 0xfe]))"
+---
+HTTP 400
+{
+  "result": null,
+  "resultCode": "0400"
+}

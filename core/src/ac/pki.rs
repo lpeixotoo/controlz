@@ -1,8 +1,11 @@
 //! Our certificate authority for the local cloud (KB: AC — TLS / certificates).
 //!
-//! An RSA-2048 CA signs the server certificate (hostname as DNS SAN; the
-//! module's ECDHE-RSA suites need an RSA key) and the client certificates
-//! the module asks for with a CSR. Private keys are secrets: their PEM only
+//! Two RSA-2048 CAs, both `pathlen:0`: the server CA signs only the server
+//! certificate (hostname as DNS SAN; the module's ECDHE-RSA suites need an
+//! RSA key) and is the CA the module is told to trust; the client CA signs
+//! only the client certificates the module asks for with a CSR, and is never
+//! handed to the module. So a client certificate can never pass as our
+//! server certificate, even if the module ignores EKU. Private keys are secrets: their PEM only
 //! leaves this module as a [`Secret`], `Debug` never shows them, and on disk
 //! they live in 0600 files under a 0700 directory (see [`Pki::default_dir`]).
 
@@ -16,7 +19,7 @@ use openssl::asn1::{Asn1Integer, Asn1Time};
 use openssl::bn::{BigNum, MsbOption};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
-use openssl::pkey::{HasPublic, PKey, PKeyRef, Private};
+use openssl::pkey::{HasPublic, Id, PKey, PKeyRef, Private, Public};
 use openssl::rsa::Rsa;
 use openssl::x509::extension::{
     AuthorityKeyIdentifier, BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
@@ -32,6 +35,12 @@ const CA_DAYS: u32 = 3650;
 const SERVER_DAYS: u32 = 825;
 /// A server certificate expiring within this many days is re-issued on load.
 const SERVER_RENEW_DAYS: u32 = 30;
+/// Longest validity [`Ca::sign_csr`] grants (the CA/B 825-day ceiling).
+pub const MAX_CLIENT_DAYS: u32 = 825;
+/// Smallest RSA key [`Ca::sign_csr`] accepts.
+const MIN_CSR_RSA_BITS: u32 = 2048;
+/// Largest RSA key [`Ca::sign_csr`] accepts (bounds the verify cost).
+const MAX_CSR_RSA_BITS: u32 = 8192;
 
 /// A key pair and its certificate (the CA or a server leaf).
 #[derive(Clone)]
@@ -115,6 +124,7 @@ pub struct Ca(Identity);
 
 impl Ca {
     /// Generates a self-signed RSA-2048 CA with common name `common_name`.
+    /// Its basic constraints carry `pathlen:0`: it can sign leaves only.
     ///
     /// # Errors
     /// [`ControlError::Invalid`] if key generation or signing fails.
@@ -130,6 +140,7 @@ impl Ca {
             BasicConstraints::new()
                 .critical()
                 .ca()
+                .pathlen(0)
                 .build()
                 .map_err(invalid)?,
         )
@@ -205,14 +216,34 @@ impl Ca {
     /// Only the CSR's subject and public key are used; its requested
     /// extensions are ignored. Returns the certificate as PEM.
     ///
+    /// Call this on [`Pki::client_ca`] only, never on the server CA.
+    ///
     /// # Errors
-    /// [`ControlError::Invalid`] if the CSR is malformed, its signature does
-    /// not verify, or signing fails.
-    pub fn sign_csr(&self, csr_pem: &str, days: u32) -> Result<String> {
+    /// [`ControlError::Invalid`] if `days` is not in `1..=`[`MAX_CLIENT_DAYS`],
+    /// the CSR is malformed, its key is neither RSA of 2048 to 8192 bits nor
+    /// EC P-256, its signature does not verify, its subject does not have
+    /// exactly one common name equal to `expected_cn`, or signing fails.
+    /// Error messages never include the CSR or the common name.
+    pub fn sign_csr(&self, csr_pem: &str, expected_cn: &str, days: u32) -> Result<String> {
+        if !(1..=MAX_CLIENT_DAYS).contains(&days) {
+            return Err(ControlError::invalid(format!(
+                "client certificate validity must be 1 to {MAX_CLIENT_DAYS} days"
+            )));
+        }
         let req = X509Req::from_pem(csr_pem.as_bytes()).map_err(invalid)?;
         let public = req.public_key().map_err(invalid)?;
+        check_csr_key(&public)?;
         if !req.verify(&public).map_err(invalid)? {
             return Err(ControlError::invalid("CSR signature does not verify"));
+        }
+        let mut cns = req.subject_name().entries_by_nid(Nid::COMMONNAME);
+        let cn_matches = cns
+            .next()
+            .is_some_and(|cn| cn.data().as_slice() == expected_cn.as_bytes());
+        if !cn_matches || cns.next().is_some() {
+            return Err(ControlError::invalid(
+                "CSR subject must have exactly one common name, equal to the device uuid",
+            ));
         }
         let mut b = builder(
             req.subject_name(),
@@ -254,17 +285,43 @@ impl Ca {
     }
 }
 
-/// The CA plus the server certificate, persisted as PEM files.
+/// Accepts RSA keys of [`MIN_CSR_RSA_BITS`]..=[`MAX_CSR_RSA_BITS`] and EC P-256.
+fn check_csr_key(key: &PKeyRef<Public>) -> Result<()> {
+    let ok = match key.id() {
+        Id::RSA => (MIN_CSR_RSA_BITS..=MAX_CSR_RSA_BITS).contains(&key.bits()),
+        Id::EC => key
+            .ec_key()
+            .map_err(invalid)?
+            .group()
+            .curve_name()
+            .is_some_and(|nid| nid == Nid::X9_62_PRIME256V1),
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(ControlError::invalid(
+            "CSR key must be RSA of 2048 to 8192 bits or EC P-256",
+        ))
+    }
+}
+
+/// Both CAs plus the server certificate, persisted as PEM files.
 #[derive(Clone, Debug)]
 pub struct Pki {
-    /// Our CA: signs the server certificate and the module's client certificates.
+    /// The server CA: signs only the server certificate. This is the CA
+    /// `/route/certificate` hands to the module.
     pub ca: Ca,
+    /// The client CA: signs only the module's CSRs. Never sent to the module.
+    pub client_ca: Ca,
     /// The certificate and key our HTTPS/MQTTS servers present to the module.
     pub server: Identity,
 }
 
 const CA_CERT: &str = "ca.pem";
 const CA_KEY: &str = "ca.key";
+const CLIENT_CA_CERT: &str = "client-ca.pem";
+const CLIENT_CA_KEY: &str = "client-ca.key";
 const SERVER_CERT: &str = "server.pem";
 const SERVER_KEY: &str = "server.key";
 
@@ -283,14 +340,15 @@ impl Pki {
             .join("pki"))
     }
 
-    /// Loads the CA and server certificate from `dir`, generating whatever is
-    /// missing. Anything newly generated is saved.
+    /// Loads both CAs and the server certificate from `dir`, generating
+    /// whatever is missing. Anything newly generated is saved.
     ///
     /// The server certificate is re-issued when the CA was just generated, or
     /// when it lacks `hostname` in its SANs, was not signed by the CA, expires
     /// within 30 days, or its files are unreadable as a pair (for example a
-    /// new key next to the old cert after a crash). A bad CA pair is a hard
-    /// error instead: regenerating it silently would orphan enrolled modules.
+    /// new key next to the old cert after a crash). A bad pair for either CA
+    /// is a hard error instead: regenerating it silently would orphan
+    /// enrolled modules.
     ///
     /// # Errors
     /// [`ControlError::Config`] on file I/O errors, [`ControlError::Invalid`]
@@ -303,6 +361,14 @@ impl Pki {
             let ca = Ca::generate("Controlz local CA")?;
             write_pair(dir, CA_CERT, CA_KEY, ca.identity())?;
             (ca, true)
+        };
+        let client_ca = if let Some(id) = load_identity(dir, CLIENT_CA_CERT, CLIENT_CA_KEY)? {
+            Ca(id)
+        } else {
+            tracing::info!(dir = %dir.display(), "generating a new Controlz client CA");
+            let ca = Ca::generate("Controlz local client CA")?;
+            write_pair(dir, CLIENT_CA_CERT, CLIENT_CA_KEY, ca.identity())?;
+            ca
         };
         let existing = match load_identity(dir, SERVER_CERT, SERVER_KEY) {
             Ok(id) => id,
@@ -321,27 +387,44 @@ impl Pki {
                 id
             }
         };
-        Ok(Self { ca, server })
+        Ok(Self {
+            ca,
+            client_ca,
+            server,
+        })
     }
 
-    /// Writes all four PEM files to `dir` (created 0700; keys 0600).
+    /// Writes all six PEM files to `dir` (created 0700; keys 0600).
     ///
     /// # Errors
     /// [`ControlError::Config`] on file I/O errors.
     pub fn save(&self, dir: &Path) -> Result<()> {
         write_pair(dir, CA_CERT, CA_KEY, self.ca.identity())?;
+        write_pair(
+            dir,
+            CLIENT_CA_CERT,
+            CLIENT_CA_KEY,
+            self.client_ca.identity(),
+        )?;
         write_pair(dir, SERVER_CERT, SERVER_KEY, &self.server)
     }
 }
 
 /// Whether a loaded server identity can be kept: right SAN, signed by `ca`,
-/// and not expiring within [`SERVER_RENEW_DAYS`].
+/// and not expiring within [`SERVER_RENEW_DAYS`]. A signature check that
+/// errors (for example a key type that does not match the CA's) counts as
+/// "not signed by `ca`", so the caller re-issues instead of failing.
 fn server_is_current(id: &Identity, ca: &Ca, hostname: &str) -> Result<bool> {
     let ca_key = ca.cert().public_key().map_err(invalid)?;
     let renew_by = Asn1Time::days_from_now(SERVER_RENEW_DAYS).map_err(invalid)?;
-    Ok(id.has_dns_san(hostname)
-        && id.cert().verify(&ca_key).map_err(invalid)?
-        && id.cert().not_after() > renew_by)
+    let signed_by_ca = match id.cert().verify(&ca_key) {
+        Ok(ok) => ok,
+        Err(e) => {
+            tracing::warn!(error = %e, "server certificate signature check failed; re-issuing");
+            false
+        }
+    };
+    Ok(id.has_dns_san(hostname) && signed_by_ca && id.cert().not_after() > renew_by)
 }
 
 fn load_identity(dir: &Path, cert_file: &str, key_file: &str) -> Result<Option<Identity>> {
@@ -440,76 +523,256 @@ fn invalid(e: impl fmt::Display) -> ControlError {
     ControlError::invalid(format!("PKI: {e}"))
 }
 
-/// One CA + server certificate shared by every test (RSA generation is slow).
+/// Both CAs + server certificate shared by every test (RSA generation is slow).
 #[cfg(test)]
 pub(crate) mod test_fixture {
     use super::{Ca, Pki};
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::hash::MessageDigest;
+    use openssl::nid::Nid;
+    use openssl::pkey::{PKey, Private};
+    use openssl::stack::Stack;
+    use openssl::x509::store::X509StoreBuilder;
+    use openssl::x509::{
+        X509, X509NameBuilder, X509ReqBuilder, X509StoreContext, X509StoreContextRef,
+    };
     use std::sync::LazyLock;
 
     pub(crate) const HOSTNAME: &str = "controlz.test";
 
     pub(crate) static FIXTURE: LazyLock<Pki> = LazyLock::new(|| {
         let ca = Ca::generate("Controlz test CA").unwrap();
+        let client_ca = Ca::generate("Controlz test client CA").unwrap();
         let server = ca.issue_server(HOSTNAME).unwrap();
-        Pki { ca, server }
+        Pki {
+            ca,
+            client_ca,
+            server,
+        }
     });
+
+    /// A fresh EC P-256 key (cheap to generate, unlike RSA).
+    pub(crate) fn p256_key() -> PKey<Private> {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap()
+    }
+
+    /// A PEM CSR signed by `key` whose subject has one CN entry per `cns`.
+    pub(crate) fn csr_pem(key: &PKey<Private>, cns: &[&str]) -> String {
+        let mut name = X509NameBuilder::new().unwrap();
+        for cn in cns {
+            name.append_entry_by_nid(Nid::COMMONNAME, cn).unwrap();
+        }
+        let name = name.build();
+        let mut req = X509ReqBuilder::new().unwrap();
+        req.set_subject_name(&name).unwrap();
+        req.set_pubkey(key).unwrap();
+        req.sign(key, MessageDigest::sha256()).unwrap();
+        String::from_utf8(req.build().to_pem().unwrap()).unwrap()
+    }
+
+    /// Whether `cert` chains to the CA certificate `ca` (full X.509 path check).
+    pub(crate) fn chains_to(cert: &X509, ca: &X509) -> bool {
+        let mut store = X509StoreBuilder::new().unwrap();
+        store.add_cert(ca.clone()).unwrap();
+        let store = store.build();
+        let mut ctx = X509StoreContext::new().unwrap();
+        let chain = Stack::new().unwrap();
+        ctx.init(&store, cert, &chain, X509StoreContextRef::verify_cert)
+            .unwrap()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixture::{FIXTURE, HOSTNAME};
+    use super::test_fixture::{FIXTURE, HOSTNAME, chains_to, csr_pem, p256_key};
     use super::*;
     use openssl::ec::{EcGroup, EcKey};
-    use openssl::stack::Stack;
-    use openssl::x509::X509ReqBuilder;
-    use openssl::x509::store::X509StoreBuilder;
-    use openssl::x509::{X509StoreContext, X509VerifyResult};
     use std::io;
     use std::sync::{Arc, Mutex};
 
-    fn verifies_against_ca(cert: &X509) -> bool {
-        let ca_key = FIXTURE.ca.cert().public_key().unwrap();
-        assert!(cert.verify(&ca_key).unwrap(), "signature");
-        let mut store = X509StoreBuilder::new().unwrap();
-        store.add_cert(FIXTURE.ca.cert().clone()).unwrap();
-        let store = store.build();
-        let mut ctx = X509StoreContext::new().unwrap();
-        let chain = Stack::new().unwrap();
-        ctx.init(&store, cert, &chain, |c| {
-            let ok = c.verify_cert()?;
-            assert_eq!(c.error(), X509VerifyResult::OK);
-            Ok(ok)
-        })
-        .unwrap()
+    const UUID: &str = "fake-device-uuid";
+
+    fn sign(csr: &str) -> Result<String> {
+        FIXTURE.client_ca.sign_csr(csr, UUID, 365)
+    }
+
+    fn assert_invalid(result: &Result<String>, what: &str) {
+        assert!(
+            matches!(result, Err(ControlError::Invalid { .. })),
+            "{what} must be rejected: {result:?}"
+        );
     }
 
     #[test]
-    fn signed_csr_verifies_against_ca() {
-        // EC key: cheap to generate, and sign_csr must not care about the type.
-        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
-        let mut name = X509NameBuilder::new().unwrap();
-        name.append_entry_by_nid(Nid::COMMONNAME, "fake-device-uuid")
-            .unwrap();
-        let name = name.build();
-        let mut req = X509ReqBuilder::new().unwrap();
-        req.set_subject_name(&name).unwrap();
-        req.set_pubkey(&key).unwrap();
-        req.sign(&key, MessageDigest::sha256()).unwrap();
-        let csr = String::from_utf8(req.build().to_pem().unwrap()).unwrap();
-
-        let cert = X509::from_pem(FIXTURE.ca.sign_csr(&csr, 365).unwrap().as_bytes()).unwrap();
-        assert!(verifies_against_ca(&cert));
+    fn signed_csr_chains_to_the_client_ca_only() {
+        let key = p256_key();
+        let cert = X509::from_pem(sign(&csr_pem(&key, &[UUID])).unwrap().as_bytes()).unwrap();
+        assert!(chains_to(&cert, FIXTURE.client_ca.cert()));
+        assert!(
+            !chains_to(&cert, FIXTURE.ca.cert()),
+            "a client cert must not chain to the server CA"
+        );
         assert!(cert.public_key().unwrap().public_eq(&key));
         let cn = cert.subject_name().entries_by_nid(Nid::COMMONNAME).next();
-        assert_eq!(cn.unwrap().data().as_slice(), b"fake-device-uuid");
+        assert_eq!(cn.unwrap().data().as_slice(), UUID.as_bytes());
+    }
+
+    #[test]
+    fn cas_have_pathlen_zero() {
+        assert_eq!(FIXTURE.ca.cert().pathlen(), Some(0));
+        assert_eq!(FIXTURE.client_ca.cert().pathlen(), Some(0));
+    }
+
+    #[test]
+    fn sign_csr_caps_validity() {
+        let csr = csr_pem(&p256_key(), &[UUID]);
+        let ca = &FIXTURE.client_ca;
+        for days in [1, 365, MAX_CLIENT_DAYS] {
+            let pem = ca.sign_csr(&csr, UUID, days).unwrap();
+            let cert = X509::from_pem(pem.as_bytes()).unwrap();
+            let not_after = cert.not_after();
+            let earliest = Asn1Time::days_from_now(days - 1).unwrap();
+            let latest = Asn1Time::days_from_now(days + 1).unwrap();
+            assert!(
+                earliest < not_after && not_after < latest,
+                "{days} days: not_after {not_after}"
+            );
+        }
+        assert_invalid(&ca.sign_csr(&csr, UUID, MAX_CLIENT_DAYS + 1), "826 days");
+        assert_invalid(&ca.sign_csr(&csr, UUID, 0), "0 days");
+    }
+
+    /// A CSR carrying an RSA public key with a `bits`-bit modulus, signed by
+    /// an unrelated P-256 key. Generating real 8192+-bit keys is slow, and
+    /// the key-size check runs before the signature check, so the error
+    /// message tells whether the size check refused it.
+    fn rsa_public_csr(bits: i32) -> String {
+        let mut n = BigNum::new().unwrap();
+        n.rand(bits, MsbOption::ONE, true).unwrap();
+        let e = BigNum::from_u32(65537).unwrap();
+        let public = PKey::from_rsa(Rsa::from_public_components(n, e).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_nid(Nid::COMMONNAME, UUID).unwrap();
+        let mut req = openssl::x509::X509ReqBuilder::new().unwrap();
+        req.set_subject_name(&name.build()).unwrap();
+        req.set_pubkey(&public).unwrap();
+        req.sign(&p256_key(), MessageDigest::sha256()).unwrap();
+        String::from_utf8(req.build().to_pem().unwrap()).unwrap()
+    }
+
+    fn invalid_message(result: Result<String>) -> String {
+        match result {
+            Err(ControlError::Invalid { message }) => message,
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sign_csr_accepts_rsa_2048_and_caps_rsa_at_8192_bits() {
+        let rsa2048 = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        assert!(sign(&csr_pem(&rsa2048, &[UUID])).is_ok());
+        let at_max = invalid_message(sign(&rsa_public_csr(8192)));
+        // Past the key check; refused later by the (mismatched) signature check.
+        assert!(!at_max.contains("CSR key must be"), "{at_max}");
+        let over_max = invalid_message(sign(&rsa_public_csr(8200)));
+        assert!(over_max.contains("CSR key must be RSA"), "{over_max}");
+    }
+
+    #[test]
+    fn sign_csr_rejects_weak_or_unusual_keys() {
+        let rsa1024 = PKey::from_rsa(Rsa::generate(1024).unwrap()).unwrap();
+        assert_invalid(&sign(&csr_pem(&rsa1024, &[UUID])), "RSA-1024");
+        let p384 = EcGroup::from_curve_name(Nid::SECP384R1).unwrap();
+        let p384 = PKey::from_ec_key(EcKey::generate(&p384).unwrap()).unwrap();
+        assert_invalid(&sign(&csr_pem(&p384, &[UUID])), "P-384");
+        let ed25519 = PKey::generate_ed25519().unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_nid(Nid::COMMONNAME, UUID).unwrap();
+        let mut req = openssl::x509::X509ReqBuilder::new().unwrap();
+        req.set_subject_name(&name.build()).unwrap();
+        req.set_pubkey(&ed25519).unwrap();
+        req.sign(&ed25519, MessageDigest::null()).unwrap();
+        let csr = String::from_utf8(req.build().to_pem().unwrap()).unwrap();
+        assert_invalid(&sign(&csr), "Ed25519");
+    }
+
+    #[test]
+    fn sign_csr_requires_the_expected_cn() {
+        let key = p256_key();
+        assert_invalid(&sign(&csr_pem(&key, &["other-uuid"])), "CN mismatch");
+        assert_invalid(&sign(&csr_pem(&key, &[])), "no CN");
+        assert_invalid(&sign(&csr_pem(&key, &[UUID, UUID])), "two CNs");
+        assert_invalid(&sign(&csr_pem(&key, &[&format!("{UUID}x")])), "CN prefix");
+    }
+
+    #[test]
+    fn sign_csr_rejects_a_bad_signature_and_garbage() {
+        // A CSR whose subject was signed by another key.
+        let (signer, claimed) = (p256_key(), p256_key());
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_nid(Nid::COMMONNAME, UUID).unwrap();
+        let mut req = openssl::x509::X509ReqBuilder::new().unwrap();
+        req.set_subject_name(&name.build()).unwrap();
+        req.set_pubkey(&claimed).unwrap();
+        req.sign(&signer, MessageDigest::sha256()).unwrap();
+        let csr = String::from_utf8(req.build().to_pem().unwrap()).unwrap();
+        assert_invalid(&sign(&csr), "a forged CSR");
+        assert_invalid(&sign("not a csr"), "garbage");
     }
 
     #[test]
     fn server_cert_carries_san() {
         assert!(FIXTURE.server.has_dns_san(HOSTNAME));
         assert!(!FIXTURE.server.has_dns_san("other.test"));
-        assert!(verifies_against_ca(FIXTURE.server.cert()));
+        assert!(chains_to(FIXTURE.server.cert(), FIXTURE.ca.cert()));
+        assert!(!chains_to(FIXTURE.server.cert(), FIXTURE.client_ca.cert()));
+    }
+
+    /// A self-signed CA with an EC key, so verifying an RSA-signed cert
+    /// against it errors (wrong public key type) instead of returning false.
+    fn ec_ca() -> Ca {
+        let key = p256_key();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_nid(Nid::COMMONNAME, "Controlz EC test CA")
+            .unwrap();
+        let name = name.build();
+        let mut b = builder(&name, &name, &key, 30).unwrap();
+        b.append_extension(
+            BasicConstraints::new()
+                .critical()
+                .ca()
+                .pathlen(0)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        b.sign(&key, MessageDigest::sha256()).unwrap();
+        Ca(Identity {
+            cert: b.build(),
+            key,
+        })
+    }
+
+    #[test]
+    fn verify_error_means_reissue() {
+        let ca = ec_ca();
+        let ca_key = ca.cert().public_key().unwrap();
+        assert!(
+            FIXTURE.server.cert().verify(&ca_key).is_err(),
+            "precondition: verify() must error, not return false"
+        );
+        assert!(!server_is_current(&FIXTURE.server, &ca, HOSTNAME).unwrap());
+
+        // On disk: the EC CA next to the fixture's RSA-signed server cert.
+        let dir = std::env::temp_dir().join(format!("controlz-pki-ecca-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        FIXTURE.save(&dir).unwrap();
+        write_pair(&dir, CA_CERT, CA_KEY, ca.identity()).unwrap();
+        let loaded = Pki::load_or_create(&dir, HOSTNAME).unwrap();
+        assert!(loaded.server.cert().verify(&ca_key).unwrap(), "re-issued");
+        assert!(server_is_current(&loaded.server, &loaded.ca, HOSTNAME).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -520,6 +783,7 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
         assert_eq!(mode(&dir.join(CA_KEY)), 0o600);
+        assert_eq!(mode(&dir.join(CLIENT_CA_KEY)), 0o600);
         assert_eq!(mode(&dir.join(SERVER_KEY)), 0o600);
 
         let loaded = Pki::load_or_create(&dir, HOSTNAME).unwrap();
@@ -534,6 +798,13 @@ mod tests {
                 .identity()
                 .key()
                 .public_eq(FIXTURE.ca.identity().key())
+        );
+        assert!(
+            loaded
+                .client_ca
+                .identity()
+                .key()
+                .public_eq(FIXTURE.client_ca.identity().key())
         );
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -553,6 +824,44 @@ mod tests {
         assert!(loaded.server.has_dns_san(HOSTNAME));
         assert!(server_is_current(&loaded.server, &loaded.ca, HOSTNAME).unwrap());
         assert!(!server_is_current(&FIXTURE.server, &loaded.ca, HOSTNAME).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_client_ca_is_generated() {
+        let dir = std::env::temp_dir().join(format!("controlz-pki-newcca-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        FIXTURE.save(&dir).unwrap();
+        fs::remove_file(dir.join(CLIENT_CA_CERT)).unwrap();
+        fs::remove_file(dir.join(CLIENT_CA_KEY)).unwrap();
+
+        let loaded = Pki::load_or_create(&dir, HOSTNAME).unwrap();
+        let mode = fs::metadata(dir.join(CLIENT_CA_KEY))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            !loaded
+                .client_ca
+                .identity()
+                .key()
+                .public_eq(FIXTURE.client_ca.identity().key())
+        );
+        assert!(
+            !loaded
+                .client_ca
+                .identity()
+                .key()
+                .public_eq(loaded.ca.identity().key())
+        );
+        assert_eq!(loaded.client_ca.cert().pathlen(), Some(0));
+        assert_eq!(
+            loaded.server.cert().to_der().unwrap(),
+            FIXTURE.server.cert().to_der().unwrap(),
+            "the server CA and certificate are unaffected"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
