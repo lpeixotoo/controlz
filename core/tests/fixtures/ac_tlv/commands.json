@@ -1,0 +1,9 @@
+[
+  {"name": "power_off", "seq": 1, "data": "01010400000065020101027dc00576"},
+  {"name": "power_on", "seq": 2, "data": "01010400000065020102027dc18e8b"},
+  {"name": "set_cool_mid_24", "seq": 3, "data": "01010400000065020103077e407e847f9030dba6"},
+  {"name": "set_auto_auto_minus1", "seq": 4, "data": "01010400000065020104077e437e887f9020f9ee"},
+  {"name": "light_off", "seq": 5, "data": "010104000000650201050287c0338d"},
+  {"name": "query_state", "seq": 6, "data": "01010400000065020206027d420b43"},
+  {"name": "query_static", "seq": 7, "data": "01010400000065020207027d414d94"}
+]

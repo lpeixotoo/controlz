@@ -1,0 +1,31 @@
+---
+source: core/src/ac/tlv.rs
+expression: state
+---
+AcState {
+    power: Some(
+        true,
+    ),
+    mode: Some(
+        Auto,
+    ),
+    fan: Some(
+        Mid,
+    ),
+    room_temp: Some(
+        RoomTemp(
+            43,
+        ),
+    ),
+    setpoint_raw: Some(
+        36,
+    ),
+    light: Some(
+        true,
+    ),
+    unknown: [
+        Tlv { kind: 0x322, value: 0 },
+        Tlv { kind: 0x232, value: 13893 },
+        Tlv { kind: 0x321, value: 2 },
+    ],
+}

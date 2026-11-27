@@ -21,6 +21,12 @@ impl ControlError {
         }
     }
 
+    pub(crate) fn device(e: impl std::fmt::Display) -> Self {
+        Self::Device {
+            message: e.to_string(),
+        }
+    }
+
     pub(crate) fn invalid(e: impl std::fmt::Display) -> Self {
         Self::Invalid {
             message: e.to_string(),

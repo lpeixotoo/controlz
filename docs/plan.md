@@ -177,7 +177,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: default topic names only (a non-default `topic_prov` is stored in the module's flash). Clean-room rule as in T1.2. User decisions (2026-11-27): LG's `$aws/rules/...` topic names in completeProvisioning (bare `clip/...` accepted inbound), no `req_timesync` reply until T1.9 captures, `next_event`/`send_packet` shipped now. Closed with the user's OK (2026-11-27).
 
 ### T1.6 — RAC TLV codec
-- status: todo
+- status: done
 - deps: -
 - owner: implementer
 - files: core/src/ac/tlv.rs, core/src/ac/mod.rs, core/tests/fixtures/
@@ -185,9 +185,9 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - design: -
 - approach: Parse `device_packet` and build `packet` hex TLV for power, mode (cooling-only set; Auto = 3), target temperature (half degrees), fan, light; state query 0x1f5. Typed `AcState` / `AcCommand`.
 - acceptance:
-  - [ ] Round-trip unit tests on fixture packets (fake ids)
-  - [ ] Modes the unit doesn't have (heat) are rejected with a clear error
-  - [ ] Unknown TLV fields are kept/logged, not fatal
+  - [x] Round-trip unit tests on fixture packets (fake ids)
+  - [x] Modes the unit doesn't have (heat) are rejected with a clear error
+  - [x] Unknown TLV fields are kept/logged, not fatal
 - notes: fields and values from the rethink wiki and our own captures only (clean-room rule as in T1.2); re-check against live packets in T1.9.
 
 ### T1.7 — Re-check the router for local DNS
@@ -612,6 +612,7 @@ Goal: nice-to-haves.
 - 2026-11-27 · T1.3 · done · SoftAP setup client (JSON stream splitter, typed setup messages, ping/pong, bounded timeouts) + `controlz ac setup --info-only`; provisioning commands unreachable from the CLI; device run confirmed modelName RAC_056905_WW
 - 2026-11-26 · T1.4 · done · session-scoped local cloud HTTPS server (hyper 1 over legacy TLS: /route, /route/certificate, CSR signing tied to the session uuid, once per session); ECDHE-only server suites, no renegotiation; separate client CA, pathlen:0, sign_csr ≤825 days + RSA≥2048/P-256
 - 2026-11-27 · T1.5 · done · single-device MQTT 3.1.1 broker over mutual TLS (client-CA-only cert check, CN == clientId == uuid, takeover), preDeploy/deploy → completeProvisioning with LG `$aws/rules/...` topics → ack, device_packet events + send_packet; connection/time/size limits; no uuid or payloads in logs
+- 2026-11-27 · T1.6 · done · RAC TLV codec (MQTT prefix, UART frame + CRC-16/XMODEM, 10-bit-type TLV, typed AcState/AcCommand, cooling-only modes with Auto = 3 + comfort offset, heat rejected, unknown fields kept); hex 0.4.3
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -644,3 +645,4 @@ Goal: nice-to-haves.
 - 2026-11-27 · T1.3 done · user approved close
 - 2026-11-26 · T1.4 done · user approved close
 - 2026-11-27 · T1.5 done · user approved close
+- 2026-11-27 · T1.6 done · user approved close
