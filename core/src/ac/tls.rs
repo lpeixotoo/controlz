@@ -15,7 +15,9 @@ use openssl::ssl::{
     Ssl, SslAcceptor, SslAcceptorBuilder, SslConnector, SslMethod, SslOptions, SslVerifyMode,
     SslVersion,
 };
-use openssl::x509::X509;
+use openssl::stack::Stack;
+use openssl::x509::store::X509StoreBuilder;
+use openssl::x509::{X509, X509PurposeId};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_openssl::SslStream;
 
@@ -54,6 +56,38 @@ const LEGACY_SERVER_CONNECT: SslOptions =
 /// or the key (for example a key that does not match the certificate).
 pub fn server_acceptor(cert: &X509, key: &PKey<Private>) -> Result<SslAcceptor> {
     Ok(server_builder(cert, key)?.build())
+}
+
+/// A server-side TLS acceptor for the module's MQTTS connection: the
+/// [`server_acceptor`] profile plus a mandatory client certificate.
+///
+/// The peer must present a certificate issued directly by `client_ca` (the
+/// store holds only that CA, verify depth 1) that passes OpenSSL's
+/// `sslclient` purpose check (an EKU without clientAuth fails). Clients
+/// without a certificate fail the handshake. `client_ca`'s name is the only
+/// entry of the CA list sent in `CertificateRequest`.
+///
+/// # Errors
+/// [`ControlError::Invalid`] if OpenSSL rejects the profile, the certificate,
+/// the key or the client CA.
+pub fn mqtt_acceptor(cert: &X509, key: &PKey<Private>, client_ca: &X509) -> Result<SslAcceptor> {
+    let mut builder = server_builder(cert, key)?;
+    let mut store = X509StoreBuilder::new().map_err(invalid)?;
+    store.add_cert(client_ca.clone()).map_err(invalid)?;
+    store
+        .set_purpose(X509PurposeId::SSL_CLIENT)
+        .map_err(invalid)?;
+    builder
+        .set_verify_cert_store(store.build())
+        .map_err(invalid)?;
+    let mut names = Stack::new().map_err(invalid)?;
+    names
+        .push(client_ca.subject_name().to_owned().map_err(invalid)?)
+        .map_err(invalid)?;
+    builder.set_client_ca_list(names);
+    builder.set_verify_depth(1);
+    builder.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+    Ok(builder.build())
 }
 
 /// The configured builder behind [`server_acceptor`]; split out so tests can
@@ -148,7 +182,10 @@ fn invalid(e: openssl::error::ErrorStack) -> ControlError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ac::pki::test_fixture::{FIXTURE, HOSTNAME};
+    use crate::ac::pki::test_fixture::{FIXTURE, HOSTNAME, csr_pem, p256_key};
+    use crate::ac::pki::{Ca, Identity};
+    use crate::secret::Secret;
+    use openssl::nid::Nid;
     use openssl::ssl::SslConnectorBuilder;
 
     /// A client like the module: TLS 1.2, one CBC suite, verifying our CA and SAN.
@@ -322,5 +359,76 @@ mod tests {
         client_renegotiates(&b.build())
             .await
             .expect("renegotiation with a permissive server");
+    }
+
+    // ---- mqtt_acceptor: mandatory client certificate ----
+
+    const MQTT_UUID: &str = "00000000-fake-0000-0000-000000000000";
+
+    /// An EC client certificate for `cn`, signed by `ca` (clientAuth EKU).
+    fn client_identity(ca: &Ca, cn: &str) -> Identity {
+        let key = p256_key();
+        let pem = ca.sign_csr(&csr_pem(&key, &[cn]), cn, 30).unwrap();
+        let key_pem =
+            Secret::new(String::from_utf8(key.private_key_to_pem_pkcs8().unwrap()).unwrap());
+        Identity::from_pem(&pem, &key_pem).unwrap()
+    }
+
+    fn mqtt_server() -> SslAcceptor {
+        mqtt_acceptor(
+            FIXTURE.server.cert(),
+            FIXTURE.server.key(),
+            FIXTURE.client_ca.cert(),
+        )
+        .unwrap()
+    }
+
+    /// A module-like client presenting `identity`, if any.
+    fn mqtt_client(identity: Option<&Identity>) -> SslConnector {
+        client(|b| {
+            b.set_min_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+            b.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+            b.set_cipher_list("ECDHE-RSA-AES256-SHA@SECLEVEL=0")
+                .unwrap();
+            if let Some(id) = identity {
+                b.set_certificate(id.cert()).unwrap();
+                b.set_private_key(id.key()).unwrap();
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn mqtt_acceptor_takes_a_client_ca_certificate() {
+        let id = client_identity(&FIXTURE.client_ca, MQTT_UUID);
+        let (client, server) = handshake_with(mqtt_client(Some(&id)), &mqtt_server()).await;
+        client.expect("client handshake");
+        let server = server.expect("server handshake");
+        let peer = server.ssl().peer_certificate().expect("peer certificate");
+        let cn = peer
+            .subject_name()
+            .entries_by_nid(Nid::COMMONNAME)
+            .next()
+            .unwrap();
+        assert_eq!(cn.data().as_slice(), MQTT_UUID.as_bytes());
+        assert_eq!(server.ssl().version_str(), "TLSv1.2");
+    }
+
+    async fn assert_mqtt_refused(identity: Option<&Identity>, what: &str) {
+        let (client, server) = handshake_with(mqtt_client(identity), &mqtt_server()).await;
+        assert!(client.is_err(), "{what}: client handshake must fail");
+        assert!(
+            matches!(server, Err(ControlError::Network { .. })),
+            "{what}: server must refuse"
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt_acceptor_refuses_clients_without_a_client_ca_certificate() {
+        assert_mqtt_refused(None, "no certificate").await;
+        let wrong_ca = client_identity(&FIXTURE.ca, MQTT_UUID);
+        assert_mqtt_refused(Some(&wrong_ca), "server CA certificate").await;
+        // Right CA, right CN, but a serverAuth-only EKU.
+        let server_only = FIXTURE.client_ca.issue_server(MQTT_UUID).unwrap();
+        assert_mqtt_refused(Some(&server_only), "no clientAuth EKU").await;
     }
 }

@@ -1,0 +1,23 @@
+---
+source: core/src/ac/mqtt.rs
+expression: "serde_json::to_string_pretty(&reply).unwrap()"
+---
+{
+  "cmd": "completeProvisioning",
+  "data": {
+    "appInfo": {
+      "host": "message",
+      "publication": {
+        "message": "$aws/rules/clip_http_action_rule/clip/devices/00000000-fake-0000-0000-000000000000/message",
+        "provisioning": "$aws/rules/clip_provisioning_rule/clip/provisioning/devices/00000000-fake-0000-0000-000000000000"
+      }
+    },
+    "deployInterval": 600,
+    "host": "message",
+    "provisioningType": "preDeploy",
+    "result": 0
+  },
+  "did": "00000000-fake-0000-0000-000000000000",
+  "mid": 1700000000000,
+  "type": 0
+}

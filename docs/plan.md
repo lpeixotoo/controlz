@@ -162,7 +162,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: clean-room rule as in T1.2. Hardening items from the T1.2 security discussion (2026-11-26). CSR binding, client CA, `pathlen:0` and renegotiation items from the 2026-11-26 security review (findings 1–3); no module is enrolled yet, so changing the CA layout orphans nothing. Closed with the user's OK (2026-11-26).
 
 ### T1.5 — Single-device MQTT broker + provisioning
-- status: todo
+- status: done
 - deps: T1.2
 - owner: implementer
 - files: core/src/ac/mqtt.rs, core/src/ac/mod.rs, core/tests/fixtures/
@@ -170,11 +170,11 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - design: -
 - approach: In-crate MQTT 3.1.1 subset (CONNECT/SUBSCRIBE/PUBLISH QoS 0–1/PING) over TLS on 8883 with client-cert check, one client (clientId = uuid). Handles preDeploy/deploy → completeProvisioning with the default topic names, and the ack; `req_timesync` reply decided from captures.
 - acceptance:
-  - [ ] A mock-device test completes provisioning and a redeploy
-  - [ ] Unknown packets are logged without payload secrets
-  - [ ] Reconnect after a dropped connection works (test)
-  - [ ] Hardening: a client without a cert from our client CA is rejected in the TLS handshake, before any MQTT byte is parsed (test); CONNECT is rejected unless cert CN == clientId == the session's expected uuid (test with a valid cert for another uuid); reads and writes after the handshake have timeouts; the listener binds to the configured LAN interface address
-- notes: default topic names only (a non-default `topic_prov` is stored in the module's flash). Clean-room rule as in T1.2.
+  - [x] A mock-device test completes provisioning and a redeploy
+  - [x] Unknown packets are logged without payload secrets
+  - [x] Reconnect after a dropped connection works (test)
+  - [x] Hardening: a client without a cert from our client CA is rejected in the TLS handshake, before any MQTT byte is parsed (test); CONNECT is rejected unless cert CN == clientId == the session's expected uuid (test with a valid cert for another uuid); reads and writes after the handshake have timeouts; the listener binds to the configured LAN interface address
+- notes: default topic names only (a non-default `topic_prov` is stored in the module's flash). Clean-room rule as in T1.2. User decisions (2026-11-27): LG's `$aws/rules/...` topic names in completeProvisioning (bare `clip/...` accepted inbound), no `req_timesync` reply until T1.9 captures, `next_event`/`send_packet` shipped now. Closed with the user's OK (2026-11-27).
 
 ### T1.6 — RAC TLV codec
 - status: todo
@@ -232,7 +232,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
   - [ ] The hostname strategy that worked is recorded as a decision; the procedure and quirks (ping/pong, power cycle after releaseDev) in the KB
   - [ ] The ECDHE-only server suites (T1.4) work with the real AC; if not, the fallback list is used and the reason recorded in the KB
   - [ ] The T1.4 security-review hardening (separate client CA, no unsafe renegotiation, name constraints if tried) works with the real AC; anything that fell back is recorded in the KB with the reason
-- notes: needs a DHCP reservation for the Mac (and the AC) first. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. Add T1.8 to deps if option 1 fails on the device.
+- notes: needs a DHCP reservation for the Mac (and the AC) first. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. Add T1.8 to deps if option 1 fails on the device. T1.5 checks (2026-11-27): (a) the broker drops completeProvisioning if the module publishes preDeploy/deploy before subscribing to `lime/devices/<uuid>` — if so, send the pending reply on SUBSCRIBE; (b) every device message must carry `did` — if the module omits it, accept a missing `did` on the per-uuid topics; also confirm payload shapes, whether `req_timesync` needs a reply, and whether QoS 1 commands need retransmit.
 
 ## P2 — Swift bridge
 Goal: expose the Rust core to Swift with uniffi and a one-command build.
@@ -611,6 +611,7 @@ Goal: nice-to-haves.
 - 2026-11-26 · T1.2 · done · legacy TLS 1.2 CBC profiles (10 s handshake timeout) + PKI (RSA-2048 CA, server cert with SAN, CSR signing, 0600 key files) on vendored OpenSSL 3.6
 - 2026-11-27 · T1.3 · done · SoftAP setup client (JSON stream splitter, typed setup messages, ping/pong, bounded timeouts) + `controlz ac setup --info-only`; provisioning commands unreachable from the CLI; device run confirmed modelName RAC_056905_WW
 - 2026-11-26 · T1.4 · done · session-scoped local cloud HTTPS server (hyper 1 over legacy TLS: /route, /route/certificate, CSR signing tied to the session uuid, once per session); ECDHE-only server suites, no renegotiation; separate client CA, pathlen:0, sign_csr ≤825 days + RSA≥2048/P-256
+- 2026-11-27 · T1.5 · done · single-device MQTT 3.1.1 broker over mutual TLS (client-CA-only cert check, CN == clientId == uuid, takeover), preDeploy/deploy → completeProvisioning with LG `$aws/rules/...` topics → ack, device_packet events + send_packet; connection/time/size limits; no uuid or payloads in logs
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -642,3 +643,4 @@ Goal: nice-to-haves.
 - 2026-11-26 · T1.1 done · user approved close
 - 2026-11-27 · T1.3 done · user approved close
 - 2026-11-26 · T1.4 done · user approved close
+- 2026-11-27 · T1.5 done · user approved close
