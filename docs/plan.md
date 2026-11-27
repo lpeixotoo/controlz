@@ -191,7 +191,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: fields and values from the rethink wiki and our own captures only (clean-room rule as in T1.2); re-check against live packets in T1.9.
 
 ### T1.7 — Re-check the router for local DNS
-- status: todo
+- status: done
 - deps: T1.1
 - owner: implementer
 - files: docs/knowledge_base.md, docs/local.md
@@ -199,10 +199,10 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - design: -
 - approach: Walk every page of the router's admin UI with the user (fresh screenshots from the user, or the user's own browser with their approval) looking for a DNS host override, static DNS / local domain, or a hostname-from-DHCP-reservation feature that the AC could resolve. Read-only: change no router setting. Record the result in KB Home network (router identifiers stay out of the repo, as before).
 - acceptance:
-  - [ ] Every admin section checked and listed in the KB (DNS, DHCP, LAN, advanced), with yes/no for a local-name option
-  - [ ] If a local-name option exists: how it would serve our hostname, and whether DHCP-reservation hostnames resolve (`dig @router <name>`)
-  - [ ] Hostname open question updated with the result
-- notes: user asked to double-check the 2026-11-25 screenshots (2026-11-26). Needs the user present.
+  - [x] Every admin section checked and listed in the KB (DNS, DHCP, LAN, advanced), with yes/no for a local-name option
+  - [x] If a local-name option exists: how it would serve our hostname, and whether DHCP-reservation hostnames resolve (`dig @router <name>`)
+  - [x] Hostname open question updated with the result
+- notes: user asked to double-check the 2026-11-25 screenshots (2026-11-26). Needs the user present. Result: the router has no local-name option. Closed with the user's OK (2026-11-27).
 
 ### T1.8 — Provisioning DNS fallback
 - status: todo
@@ -646,3 +646,4 @@ Goal: nice-to-haves.
 - 2026-11-26 · T1.4 done · user approved close
 - 2026-11-27 · T1.5 done · user approved close
 - 2026-11-27 · T1.6 done · user approved close
+- 2026-11-27 · T1.7 done · router has no local-name option; hostname option (2) ruled out
