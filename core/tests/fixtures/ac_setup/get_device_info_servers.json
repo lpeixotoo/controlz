@@ -1,0 +1,1 @@
+{"type":"request","cmd":"getDeviceInfo","data":{"publicKey":"-----BEGIN PUBLIC KEY-----\nRkFLRS1QVUJMSUMtS0VZ\n-----END PUBLIC KEY-----\n","constantConnect":"Y","mqttServer":"ssl://controlz.test:8883","apiServer":"https://controlz.test:443"}}

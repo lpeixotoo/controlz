@@ -16,5 +16,6 @@ workspace = true
 controlz_core = { path = "../core" }
 clap = { workspace = true }
 security-framework = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

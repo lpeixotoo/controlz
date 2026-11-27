@@ -1,0 +1,1 @@
+{"type":"request","cmd":"setApInfo","data":{"format":"B64","ssid":"ZmFrZS1zc2lk","security":"WPA2_PSK","cipher":"AES","password":"ZmFrZS1wYXNzd29yZA==","constantConnect":"Y"}}

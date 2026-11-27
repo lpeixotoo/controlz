@@ -1,5 +1,6 @@
 //! `controlz` command-line tool: control LG devices and manage their config.
 
+mod ac;
 mod config;
 mod secrets;
 
@@ -25,8 +26,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Air conditioner commands (not implemented yet)
-    Ac,
+    /// Air conditioner commands
+    #[command(subcommand)]
+    Ac(ac::AcCmd),
     /// TV commands (not implemented yet)
     Tv,
     /// Read and write config and Keychain secrets
@@ -52,7 +54,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     init_logging(cli.verbose);
     let result = match cli.command {
-        Command::Ac => Err("ac commands are not implemented yet".into()),
+        Command::Ac(cmd) => ac::run(cmd),
         Command::Tv => Err("tv commands are not implemented yet".into()),
         Command::Config(cmd) => config::run(cmd),
     };
@@ -68,7 +70,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::Cli;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_is_valid_and_lists_groups() {
@@ -80,5 +82,13 @@ mod tests {
         for group in ["ac", "tv", "config"] {
             assert!(names.iter().any(|n| n == group), "missing {group}");
         }
+    }
+
+    #[test]
+    fn ac_setup_requires_host() {
+        let parse =
+            |args: &[&str]| Cli::try_parse_from([&["controlz", "ac", "setup"], args].concat());
+        assert!(parse(&["--info-only"]).is_err());
+        assert!(parse(&["--info-only", "--host", "controlz.test", "--show-ids"]).is_ok());
     }
 }

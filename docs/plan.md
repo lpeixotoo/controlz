@@ -125,7 +125,7 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: clean-room rule (KB T1.1 findings): work from the rethink wiki, our captures and MIT/0BSD references only — never the rethink or rethink-rs source. OpenSSL build needs perl/make/Xcode CLT; check CI time. Keys: 0600 PEM files under Application Support/Controlz/pki/ (user choice). Local gate green, cold OpenSSL build 38 s; CI box ticked after the user's push. Closed with the user's OK (2026-11-26).
 
 ### T1.3 — SoftAP setup client + `controlz ac setup`
-- status: todo
+- status: done
 - deps: T1.2
 - owner: implementer
 - files: core/src/ac/setup.rs, core/src/ac/mod.rs, cli/src/main.rs, cli/src/ac.rs, core/tests/fixtures/
@@ -133,11 +133,11 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - design: -
 - approach: Client to the module's SoftAP gateway on 5500 over the T1.2 connector. Streaming splitter for concatenated JSON objects; typed messages (setDeviceInit, getDeviceInfo with optional apiServer/mqttServer, setCertInfo, setApInfo, releaseDev, ping/pong). CLI: `controlz ac setup --info-only` for now; the Wi-Fi password is read from piped stdin like `config secret set` (only used later, by T1.9).
 - acceptance:
-  - [ ] Fixture tests (fake values) for every message, and for split and merged frames
-  - [ ] A mock-module test runs the whole sequence end to end
-  - [ ] **Device step limited to `setDeviceInit` + `getDeviceInfo` without server fields**; `setCertInfo`/`setApInfo`/`releaseDev` are never sent to the real AC in this task
-  - [ ] On the device (user present, AC in setup mode): `modelName` recorded in the KB, uuid and other identifiers only in docs/local.md
-- notes: the module stores a `registered` flag after provisioning that only a Wi-Fi reset clears — so no provisioning before T1.4/T1.5 exist. Whether `getDeviceInfo` persists anything is unverified: note what the brief plans to send and get the user's OK first. Clean-room rule as in T1.2.
+  - [x] Fixture tests (fake values) for every message, and for split and merged frames
+  - [x] A mock-module test runs the whole sequence end to end
+  - [x] **Device step limited to `setDeviceInit` + `getDeviceInfo` without server fields**; `setCertInfo`/`setApInfo`/`releaseDev` are never sent to the real AC in this task
+  - [x] On the device (user present, AC in setup mode): `modelName` recorded in the KB, uuid and other identifiers only in docs/local.md
+- notes: the module stores a `registered` flag after provisioning that only a Wi-Fi reset clears — so no provisioning before T1.4/T1.5 exist. Whether `getDeviceInfo` persists anything is unverified: note what the brief plans to send and get the user's OK first. Clean-room rule as in T1.2. Device run by the user (getDeviceInfo only, 2026-11-27): modelName RAC_056905_WW confirmed, isReg Y. Closed with the user's OK (2026-11-27).
 
 ### T1.4 — Local cloud HTTPS server
 - status: todo
@@ -609,6 +609,7 @@ Goal: nice-to-haves.
 - 2026-11-26 · T0.5 · done · GitHub Actions CI on macos-latest runs scripts/check.sh on push/PR to main; actions pinned by SHA, contents: read; Dependabot dropped (D19)
 - 2026-11-26 · T1.1 · done · AC module probed (ThinQ2, TLS 1.2 CBC only); routes compared; chosen: clean-room Rust local ThinQ2 cloud with vendored OpenSSL 3.6 (D20); T1.2+ proposed in KB
 - 2026-11-26 · T1.2 · done · legacy TLS 1.2 CBC profiles (10 s handshake timeout) + PKI (RSA-2048 CA, server cert with SAN, CSR signing, 0600 key files) on vendored OpenSSL 3.6
+- 2026-11-27 · T1.3 · done · SoftAP setup client (JSON stream splitter, typed setup messages, ping/pong, bounded timeouts) + `controlz ac setup --info-only`; provisioning commands unreachable from the CLI; device run confirmed modelName RAC_056905_WW
 
 ## Change log
 <!-- one line per plan/knowledge-base change: date · what · why -->
@@ -638,3 +639,4 @@ Goal: nice-to-haves.
 - 2026-11-25 · T0.3 done · user approved close
 - 2026-11-26 · T0.4 done · user approved close
 - 2026-11-26 · T1.1 done · user approved close
+- 2026-11-27 · T1.3 done · user approved close

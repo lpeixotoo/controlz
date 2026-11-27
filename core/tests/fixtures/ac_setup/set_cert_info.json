@@ -1,0 +1,1 @@
+{"type":"request","cmd":"setCertInfo","data":{"otp":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","svccode":"SVC202","svcphase":"OP","constantConnect":"Y"}}
