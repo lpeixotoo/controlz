@@ -16,14 +16,30 @@
 //! publishes are accepted on the `$aws/rules/...` topics we hand out and on
 //! their bare `clip/...` forms; any known command is accepted on any of them.
 //!
-//! Hardening: the TLS handshake requires a client certificate from our
-//! client CA ([`tls::mqtt_acceptor`]), so no MQTT byte is parsed for anyone
-//! else. CONNECT is accepted only if the certificate's common name, the
-//! `clientId` and the session's uuid are all equal. One device session at a
+//! Hardening: the TLS handshake requires a client certificate and proof of
+//! its private key ([`tls::mqtt_acceptor`]). A certificate from our client
+//! CA (the CSR path) is accepted as before. Any other issuer is accepted
+//! only by its pinned public key (D21, [`Pinning`]): the module keeps the
+//! certificate of its `ThinQ` registration (seen: AWS IoT-issued, with a
+//! generic wildcard common name, so the CN is only logged). Such a
+//! certificate is checked (pin or pinning window) before any MQTT byte is
+//! parsed, and pinned only after a CONNECT whose `clientId` is the
+//! session's uuid. With our client CA, CONNECT is accepted only if the
+//! certificate's common name, the `clientId` and the session's uuid are
+//! all equal. One device session at a
 //! time: a new valid CONNECT takes over and closes the old connection.
 //! Connections are capped; the CONNECT, every packet, idle periods and
 //! every write are time-bounded; packets, topics and subscriptions are
-//! size-bounded. Logs never contain the uuid, topic uuids or payloads.
+//! size-bounded. Logs never contain the uuid or topic uuids; JSON payloads
+//! are logged only at trace level, with the uuid and identifying fields
+//! (`did`, `mac`, `ssid`, …) replaced by `***`.
+//!
+//! Device quirks handled (T1.5 checks for T1.9): a `preDeploy`/`deploy` that
+//! arrives before the module subscribes to `lime/devices/<uuid>` is answered
+//! right after that SUBSCRIBE; a device message without `did` is accepted
+//! (every topic we accept is already per-uuid), one with another `did` is not.
+//! Trailing NUL bytes on a device payload are stripped before parsing: the
+//! real AC sends its JSON with the C string terminator (T1.9).
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -31,8 +47,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use openssl::asn1::Asn1Time;
 use openssl::nid::Nid;
+use openssl::pkey::Id;
 use openssl::ssl::{SslAcceptor, SslRef};
+use openssl::x509::{X509, X509Name, X509NameRef, X509Ref};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
@@ -41,7 +60,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::{JoinHandle, JoinSet};
 
-use super::pki::Pki;
+use super::pki::{ModulePins, Pki};
 use super::tls;
 use crate::error::{ControlError, Result};
 
@@ -156,7 +175,7 @@ const DISCONNECT: u8 = 14;
 
 /// One raw MQTT packet: the fixed-header byte and the body.
 #[derive(Clone, PartialEq, Eq)]
-struct Frame {
+pub(crate) struct Frame {
     header: u8,
     body: Vec<u8>,
 }
@@ -255,6 +274,9 @@ enum Packet {
     Connect {
         client_id: String,
         keep_alive: u16,
+        /// Protocol level: 4 (MQTT 3.1.1) or 3 (MQTT 3.1). Only logged:
+        /// our subset is wire-identical for both.
+        level: u8,
     },
     Publish(Publish),
     PubAck,
@@ -286,7 +308,7 @@ impl fmt::Debug for Packet {
 }
 
 #[derive(PartialEq, Eq)]
-struct Publish {
+pub(crate) struct Publish {
     topic: String,
     qos: u8,
     packet_id: Option<u16>,
@@ -295,8 +317,10 @@ struct Publish {
 
 #[derive(Debug, PartialEq, Eq)]
 enum DecodeError {
-    /// Not MQTT 3.1.1 (`"MQTT"`, level 4): answer CONNACK `0x01`.
-    UnacceptableProtocol,
+    /// Neither MQTT 3.1.1 (`"MQTT"`, level 4) nor MQTT 3.1 (`"MQIsdp"`,
+    /// level 3): answer CONNACK `0x01`. Carries what the client sent, the
+    /// name sanitized (see `printable_name`), for the log.
+    UnacceptableProtocol { name: String, level: u8 },
     /// Malformed or unsupported: close the connection.
     Protocol(&'static str),
 }
@@ -385,12 +409,17 @@ fn decode(frame: &Frame) -> Decoded<Packet> {
             c.end()?;
             Ok(Packet::PubAck)
         }
+        // MQTT 3.1 lets a re-sent SUBSCRIBE/UNSUBSCRIBE set DUP (0b1010).
         SUBSCRIBE => {
-            fixed_flags(0b0010)?;
+            if flags != 0b1010 {
+                fixed_flags(0b0010)?;
+            }
             decode_subscribe(&mut c)
         }
         UNSUBSCRIBE => {
-            fixed_flags(0b0010)?;
+            if flags != 0b1010 {
+                fixed_flags(0b0010)?;
+            }
             decode_unsubscribe(&mut c)
         }
         PINGREQ => {
@@ -411,12 +440,39 @@ fn decode(frame: &Frame) -> Decoded<Packet> {
     }
 }
 
+/// The longest protocol name `printable_name` keeps.
+const MAX_LOGGED_PROTOCOL_NAME: usize = 16;
+
+/// A client-sent protocol name made safe to log: printable ASCII only
+/// (anything else becomes `?`), at most `MAX_LOGGED_PROTOCOL_NAME` chars.
+fn printable_name(name: &str) -> String {
+    name.chars()
+        .take(MAX_LOGGED_PROTOCOL_NAME)
+        .map(|ch| {
+            if ch.is_ascii_graphic() || ch == ' ' {
+                ch
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
 /// CONNECT: will, username and password are parsed and discarded.
+///
+/// Accepts MQTT 3.1.1 (`"MQTT"`, level 4) and MQTT 3.1 (`"MQIsdp"`, level
+/// 3). 3.1 has the same variable header and flag bits; its 1–23 character
+/// client id limit is deliberately not enforced (the uuid is 36), and its
+/// CONNACK's first byte is reserved, which our always-0 session-present
+/// byte satisfies.
 fn decode_connect(c: &mut Cursor<'_>) -> Decoded<Packet> {
     let name = c.string()?;
     let level = c.u8()?;
-    if name != "MQTT" || level != 4 {
-        return Err(DecodeError::UnacceptableProtocol);
+    if !matches!((name, level), ("MQTT", 4) | ("MQIsdp", 3)) {
+        return Err(DecodeError::UnacceptableProtocol {
+            name: printable_name(name),
+            level,
+        });
     }
     let flags = c.u8()?;
     let will = flags & 0x04 != 0;
@@ -449,6 +505,7 @@ fn decode_connect(c: &mut Cursor<'_>) -> Decoded<Packet> {
     Ok(Packet::Connect {
         client_id,
         keep_alive,
+        level,
     })
 }
 
@@ -577,6 +634,17 @@ fn encode(header: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The protocol of an accepted CONNECT, for the debug log.
+fn protocol_label(level: u8) -> &'static str {
+    match level {
+        3 => "MQTT 3.1",
+        4 => "MQTT 3.1.1",
+        _ => "MQTT (unknown level)",
+    }
+}
+
+/// CONNACK with session present = 0: MQTT 3.1.1 has no session to resume
+/// here, and in MQTT 3.1 the first byte is reserved and must be 0.
 fn encode_connack(code: u8) -> Vec<u8> {
     encode(CONNACK << 4, &[0, code])
 }
@@ -639,6 +707,118 @@ fn packet_name(kind: u8) -> &'static str {
 /// `topic` with every occurrence of `uuid` replaced by `***`.
 fn redact_topic(topic: &str, uuid: &str) -> String {
     topic.replace(uuid, "***")
+}
+
+/// Lowercase substrings of JSON keys whose values may identify the device,
+/// the home or a secret (KB: `getDeviceInfo` carries uuid, MAC, `bootId`,
+/// `eepromChecksum`, `errSSID`). Matching is deliberately broad: masking a
+/// harmless value costs nothing, leaking one into the public KB does.
+const IDENTIFYING_KEY_PARTS: &[&str] = &[
+    "uuid", "deviceid", "ssid", "mac", "serial", "bootid", "eeprom", "token", "otp", "key",
+    "password", "secret", "cert", "server", "url", "host",
+];
+
+/// Whole key segments (split at `_`, `-` and camelCase) that mark an
+/// address: `ip`, `ipAddr`, `ip_address`.
+const IDENTIFYING_KEY_SEGMENTS: &[&str] = &["did", "ip", "ipaddr", "ipaddress", "addr"];
+
+/// Replaces identifying values with `***`, recursively: values of
+/// identifying keys (see [`is_identifying_key`]) and strings that look
+/// like an address or host name (see [`looks_identifying`]).
+fn redact_ids(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                if is_identifying_key(key) {
+                    *v = Value::from("***");
+                } else {
+                    redact_ids(v);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(redact_ids),
+        Value::String(s) if looks_identifying(s) => *value = Value::from("***"),
+        _ => {}
+    }
+}
+
+fn is_identifying_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    IDENTIFYING_KEY_PARTS
+        .iter()
+        .any(|part| lower.contains(part))
+        || key_segments(key).any(|seg| {
+            IDENTIFYING_KEY_SEGMENTS
+                .iter()
+                .any(|s| seg.eq_ignore_ascii_case(s))
+        })
+}
+
+/// `macAddr_ip-v4` → `mac`, `Addr`, `ip`, `v4`. Consecutive capitals stay
+/// together (`IPAddr` is one segment, matched as `ipaddr`).
+fn key_segments(key: &str) -> impl Iterator<Item = &str> {
+    let mut segments = Vec::new();
+    for part in key.split(['_', '-']) {
+        let mut start = 0;
+        let bytes = part.as_bytes();
+        for i in 1..bytes.len() {
+            if bytes[i].is_ascii_uppercase() && bytes[i - 1].is_ascii_lowercase() {
+                segments.push(&part[start..i]);
+                start = i;
+            }
+        }
+        segments.push(&part[start..]);
+    }
+    segments.into_iter().filter(|s| !s.is_empty())
+}
+
+/// Whether a string holds a URL, an IPv4 address (dotted, or dashed as in
+/// `sslip.io` names), an IPv6 address, a MAC address or a DNS name.
+fn looks_identifying(s: &str) -> bool {
+    if s.contains("://") {
+        return true;
+    }
+    let tokens = |allowed: fn(char) -> bool| {
+        s.split(move |c: char| !allowed(c))
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+    };
+    let ipv4 = |t: &str| t.parse::<std::net::Ipv4Addr>().is_ok();
+    tokens(|c| c.is_ascii_digit() || c == '.')
+        .into_iter()
+        .any(ipv4)
+        || tokens(|c| c.is_ascii_digit() || c == '-')
+            .into_iter()
+            .any(|t| ipv4(&t.replace('-', ".")))
+        || tokens(|c| c.is_ascii_hexdigit() || c == ':' || c == '-')
+            .into_iter()
+            .any(|t| {
+                is_mac(t)
+                    || (t.matches(':').count() >= 2 && t.parse::<std::net::Ipv6Addr>().is_ok())
+            })
+        || tokens(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            .into_iter()
+            .any(is_dns_name)
+}
+
+/// A MAC address: six two-digit hex groups joined by `:` or `-`.
+fn is_mac(t: &str) -> bool {
+    let groups: Vec<&str> = t.split([':', '-']).collect();
+    groups.len() == 6
+        && groups
+            .iter()
+            .all(|g| g.len() == 2 && g.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// At least two labels and a last label of two or more letters
+/// (`ac.example.org`, `192-0-2-5.sslip.io`); `4.5` and `v1.9` are not.
+fn is_dns_name(t: &str) -> bool {
+    let labels: Vec<&str> = t.split('.').collect();
+    labels.len() >= 2
+        && labels.iter().all(|l| !l.is_empty())
+        && labels
+            .last()
+            .is_some_and(|l| l.len() >= 2 && l.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// A command name safe to log: `[A-Za-z0-9_]{1,32}`, else `<invalid>`.
@@ -725,6 +905,15 @@ struct DeviceMessage {
     data: Value,
 }
 
+/// `payload` without its trailing NUL bytes. The real AC sends its JSON as
+/// a C string including the terminator (`strlen + 1`, T1.9 capture), which
+/// a strict JSON parser rejects. NULs elsewhere are left alone, so they
+/// still make the payload unparseable.
+fn trim_trailing_nuls(payload: &[u8]) -> &[u8] {
+    let end = payload.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    &payload[..end]
+}
+
 /// Our topics for one uuid.
 #[derive(Clone)]
 struct Topics {
@@ -806,6 +995,26 @@ pub struct MqttConfig {
     /// The port: [`MQTT_PORT`](super::cloud::MQTT_PORT) in production, `0`
     /// in tests.
     pub port: u16,
+    /// How client certificates not issued by our client CA are accepted;
+    /// `None` refuses them all.
+    pub pinning: Option<Pinning>,
+}
+
+/// Public-key pinning for a module that presents a client certificate we
+/// did not issue (D21).
+///
+/// Such a certificate (any issuer, any common name: the module's real one
+/// is AWS IoT-issued with a generic wildcard CN) is accepted only if the
+/// CONNECT `clientId` is the session's uuid and its `SubjectPublicKeyInfo`
+/// SHA-256 equals the uuid's pin. Without a pin, the first such CONNECT is
+/// pinned only inside a pinning window; an existing pin is never replaced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pinning {
+    /// Where the pins are stored (the PKI directory).
+    pub pins: ModulePins,
+    /// Whether a module without a pin may be pinned now: `ac setup`, and
+    /// `ac serve` with `--dns` or `--pin`.
+    pub window: bool,
 }
 
 impl MqttConfig {
@@ -850,6 +1059,9 @@ struct Connection {
     last_packet_id: u16,
     /// The last provisioning request answered on this connection.
     provisioning: Option<ProvisioningKind>,
+    /// A provisioning request whose `completeProvisioning` could not be sent
+    /// yet (no subscription to `lime/devices/<uuid>`); sent on SUBSCRIBE.
+    unsent_reply: Option<ProvisioningKind>,
 }
 
 impl Connection {
@@ -902,6 +1114,9 @@ pub struct MqttSession {
     uuid: String,
     topics: Topics,
     limits: Limits,
+    pinning: Option<Pinning>,
+    /// Makes "read the pin, then write it" one step across connections.
+    pin_lock: Mutex<()>,
     events: mpsc::Sender<DeviceEvent>,
     active: Mutex<Option<Active>>,
     next_id: AtomicU64,
@@ -933,12 +1148,17 @@ impl MqttSession {
         limits: Limits,
     ) -> Result<MqttBroker> {
         config.validate()?;
-        let (session, events) = Self::new(expected_uuid, limits)?;
-        let acceptor = Arc::new(tls::mqtt_acceptor(
-            pki.server.cert(),
-            pki.server.key(),
-            pki.client_ca.cert(),
-        )?);
+        let (session, events) = Self::new(expected_uuid, limits, config.pinning.clone())?;
+        let acceptor = Arc::new(PeerTls {
+            acceptor: tls::mqtt_acceptor(
+                pki.server.cert(),
+                pki.server.key(),
+                pki.client_ca.cert(),
+                pki.ca.cert(),
+            )?,
+            client_ca: pki.client_ca.cert().clone(),
+            ours: tls::our_ca_names(&[pki.client_ca.cert(), pki.ca.cert()])?,
+        });
         let listener = TcpListener::bind(SocketAddr::new(config.bind, config.port))
             .await
             .map_err(|e| ControlError::network(format!("MQTT bind: {e}")))?;
@@ -955,7 +1175,11 @@ impl MqttSession {
         })
     }
 
-    fn new(uuid: &str, limits: Limits) -> Result<(Arc<Self>, mpsc::Receiver<DeviceEvent>)> {
+    fn new(
+        uuid: &str,
+        limits: Limits,
+        pinning: Option<Pinning>,
+    ) -> Result<(Arc<Self>, mpsc::Receiver<DeviceEvent>)> {
         let malformed = uuid.is_empty()
             || uuid.len() > MAX_UUID_BYTES
             || uuid.contains(['/', '?', '#', '+', '\0'])
@@ -968,6 +1192,8 @@ impl MqttSession {
             uuid: uuid.to_owned(),
             topics: Topics::new(uuid),
             limits,
+            pinning,
+            pin_lock: Mutex::new(()),
             events,
             active: Mutex::new(None),
             next_id: AtomicU64::new(1),
@@ -1019,12 +1245,30 @@ impl MqttSession {
     }
 
     /// Serves one connection after its TLS handshake (or a test stream).
-    /// `peer_cn` is the common name of the client certificate.
-    async fn serve<S>(&self, mut stream: S, peer_cn: Option<String>)
+    /// `peer` is what the client certificate is.
+    async fn serve<S>(&self, mut stream: S, peer: Peer)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
     {
-        let Some(keep_alive) = self.accept_connect(&mut stream, peer_cn.as_deref()).await else {
+        match &peer {
+            Peer::ClientCa { .. } => {}
+            Peer::Foreign(cert) => {
+                // Before any MQTT byte: only the CONNECT's clientId is left
+                // to check once this passes.
+                if let Err(why) = self.check_pin(cert, false) {
+                    self.log_refusal(&why, cert);
+                    return;
+                }
+            }
+            Peer::Unusable => {
+                tracing::warn!(
+                    "mqtt: client certificate refused: issued by our CA but not a valid \
+                     client certificate, or unreadable"
+                );
+                return;
+            }
+        }
+        let Some(keep_alive) = self.accept_connect(&mut stream, &peer).await else {
             return;
         };
         let (id, killed, outbound) = self.register();
@@ -1033,7 +1277,7 @@ impl MqttSession {
     }
 
     /// Reads the CONNECT and answers it. Returns the keep-alive if accepted.
-    async fn accept_connect<S>(&self, stream: &mut S, peer_cn: Option<&str>) -> Option<u16>
+    async fn accept_connect<S>(&self, stream: &mut S, peer: &Peer) -> Option<u16>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -1050,19 +1294,22 @@ impl MqttSession {
             Ok(Packet::Connect {
                 client_id,
                 keep_alive,
+                level,
             }) => {
-                if peer_cn == Some(self.uuid.as_str()) && client_id == self.uuid {
+                tracing::debug!("mqtt: client speaks {}", protocol_label(level));
+                if self.authorize(peer, &client_id) {
                     self.write(stream, &encode_connack(CONNACK_ACCEPTED))
                         .await?;
                     return Some(keep_alive);
                 }
-                tracing::warn!(
-                    "mqtt: CONNECT refused: certificate CN, clientId and the session's uuid differ"
-                );
                 CONNACK_NOT_AUTHORIZED
             }
-            Err(DecodeError::UnacceptableProtocol) => {
-                tracing::warn!("mqtt: CONNECT refused: not MQTT 3.1.1");
+            Err(DecodeError::UnacceptableProtocol { name, level }) => {
+                tracing::warn!(
+                    protocol = %name,
+                    level,
+                    "mqtt: CONNECT refused: not MQTT 3.1.1 or 3.1"
+                );
                 CONNACK_BAD_PROTOCOL
             }
             Ok(_) => {
@@ -1076,6 +1323,116 @@ impl MqttSession {
         };
         self.write(stream, &encode_connack(code)).await;
         None
+    }
+
+    /// Whether a CONNECT with `client_id` from `peer` may become the device
+    /// session; logs why not. Pins a foreign certificate if this is its
+    /// first accepted CONNECT inside a pinning window.
+    fn authorize(&self, peer: &Peer, client_id: &str) -> bool {
+        match peer {
+            Peer::ClientCa { cn } => {
+                let ok = cn.as_deref() == Some(self.uuid.as_str()) && client_id == self.uuid;
+                if !ok {
+                    tracing::warn!(
+                        "mqtt: CONNECT refused: certificate CN, clientId and the session's uuid differ"
+                    );
+                }
+                ok
+            }
+            Peer::Foreign(cert) => {
+                let checked = if client_id == self.uuid {
+                    self.check_pin(cert, true)
+                } else {
+                    Err(Refusal::ClientId)
+                };
+                match checked {
+                    Ok(()) => true,
+                    Err(why) => {
+                        self.log_refusal(&why, cert);
+                        false
+                    }
+                }
+            }
+            Peer::Unusable => false,
+        }
+    }
+
+    /// Checks a certificate we did not issue against the uuid's pin (its CN
+    /// is not checked, only logged). With `commit`, an unpinned key inside a
+    /// pinning window is pinned (and logged at warn); without, it only
+    /// passes.
+    fn check_pin(&self, cert: &ForeignCert, commit: bool) -> std::result::Result<(), Refusal> {
+        let Some(pinning) = &self.pinning else {
+            return Err(Refusal::NoPinning);
+        };
+        let _one_at_a_time = self.pin_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let pinned = pinning
+            .pins
+            .get(&self.uuid)
+            .map_err(|e| Refusal::Store(e.to_string()))?;
+        // Both are lowercase hex: `ModulePins` normalises what it stores
+        // and reads, and `spki_sha256` comes from `hex::encode`.
+        match pinned {
+            Some(pin) if pin == cert.spki_sha256 => {
+                if commit {
+                    tracing::debug!(
+                        fingerprint = cert.fingerprint(),
+                        "mqtt: module certificate accepted by its pin"
+                    );
+                }
+                Ok(())
+            }
+            Some(pin) => Err(Refusal::PinMismatch {
+                pinned: short_fingerprint(&pin).to_owned(),
+            }),
+            None if !pinning.window => Err(Refusal::NoPinOutsideWindow),
+            None if !commit => Ok(()),
+            None => {
+                let stored = pinning
+                    .pins
+                    .pin_first(&self.uuid, &cert.spki_sha256)
+                    .map_err(|e| Refusal::Store(e.to_string()))?;
+                if stored != cert.spki_sha256 {
+                    // Another process pinned a different key meanwhile.
+                    return Err(Refusal::PinMismatch {
+                        pinned: short_fingerprint(&stored).to_owned(),
+                    });
+                }
+                // Warn: shown at the CLI's default verbosity, so the user
+                // sees what was pinned.
+                tracing::warn!(
+                    fingerprint = cert.fingerprint(),
+                    spki_sha256 = %cert.spki_sha256,
+                    cn = %self.loggable_cn(cert),
+                    issuer = %redact_topic(&cert.issuer, &self.uuid),
+                    subject = %redact_topic(&cert.subject, &self.uuid),
+                    not_after = %cert.not_after,
+                    expired = cert.expired,
+                    key = %cert.key,
+                    "mqtt: module certificate pinned (SPKI SHA-256); only this key is accepted \
+                     from now on"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// The certificate's CN in full, with any occurrence of the uuid as
+    /// `***` (the module's real CN is a generic wildcard name).
+    fn loggable_cn(&self, cert: &ForeignCert) -> String {
+        cert.cn
+            .as_deref()
+            .map_or_else(|| "<none>".to_owned(), |cn| redact_topic(cn, &self.uuid))
+    }
+
+    fn log_refusal(&self, why: &Refusal, cert: &ForeignCert) {
+        tracing::warn!(
+            reason = %why,
+            fingerprint = cert.fingerprint(),
+            cn = %self.loggable_cn(cert),
+            issuer = %redact_topic(&cert.issuer, &self.uuid),
+            "mqtt: module certificate (not from our CA) refused"
+        );
     }
 
     /// One bounded write; `None` if it failed or timed out.
@@ -1143,7 +1500,7 @@ impl MqttSession {
             let packet = match decode(&frame) {
                 Ok(packet) => packet,
                 Err(DecodeError::Protocol(reason)) => return log_protocol_error(&frame, reason),
-                Err(DecodeError::UnacceptableProtocol) => {
+                Err(DecodeError::UnacceptableProtocol { .. }) => {
                     return log_protocol_error(&frame, "second CONNECT");
                 }
             };
@@ -1154,7 +1511,9 @@ impl MqttSession {
                 Packet::PingReq => vec![encode_pingresp()],
                 Packet::Subscribe { packet_id, filters } => {
                     let codes = lock(conn).subscribe(filters);
-                    vec![encode_suback(packet_id, &codes)]
+                    let mut replies = vec![encode_suback(packet_id, &codes)];
+                    replies.extend(self.send_unsent_reply(conn));
+                    replies
                 }
                 Packet::Unsubscribe { packet_id, filters } => {
                     lock(conn).unsubscribe(&filters);
@@ -1225,7 +1584,33 @@ impl MqttSession {
         let mut conn = lock(conn);
         let qos = conn.granted_qos(&self.topics.device)?;
         let packet_id = (qos > 0).then(|| conn.next_packet_id());
+        drop(conn);
+        self.log_payload("to device", &self.topics.device, payload);
         Some(encode_publish(&self.topics.device, payload, packet_id))
+    }
+
+    /// Trace-level payload log: JSON only, with the uuid and identifying
+    /// fields replaced by `***`; anything else is logged by length only.
+    fn log_payload(&self, direction: &'static str, topic: &str, payload: &[u8]) {
+        if !tracing::enabled!(tracing::Level::TRACE) {
+            return;
+        }
+        let topic = redact_topic(topic, &self.uuid);
+        match serde_json::from_slice::<Value>(payload) {
+            Ok(mut value) => {
+                redact_ids(&mut value);
+                let text = redact_topic(&value.to_string(), &self.uuid);
+                tracing::trace!(direction, topic, payload = %text, "mqtt: payload");
+            }
+            Err(_) => {
+                tracing::trace!(
+                    direction,
+                    topic,
+                    len = payload.len(),
+                    "mqtt: non-JSON payload"
+                );
+            }
+        }
     }
 
     /// Handles a device PUBLISH; returns a reply packet, if any.
@@ -1239,18 +1624,25 @@ impl MqttSession {
             );
             return None;
         }
-        let Ok(message) = serde_json::from_slice::<DeviceMessage>(&publish.payload) else {
+        let payload = trim_trailing_nuls(&publish.payload);
+        self.log_payload("from device", &publish.topic, payload);
+        let Ok(message) = serde_json::from_slice::<DeviceMessage>(payload) else {
             tracing::warn!(len, "mqtt: unparseable device message dropped");
             return None;
         };
         let cmd = loggable_cmd(&message.cmd);
-        if message.did.as_deref() != Some(self.uuid.as_str()) {
-            tracing::warn!(
-                cmd,
-                len,
-                "mqtt: device message with a mismatched did dropped"
-            );
-            return None;
+        match message.did.as_deref() {
+            Some(did) if did != self.uuid => {
+                tracing::warn!(
+                    cmd,
+                    len,
+                    "mqtt: device message with a mismatched did dropped"
+                );
+                return None;
+            }
+            // The topic already names this uuid (checked above).
+            None => tracing::debug!(cmd, len, "mqtt: device message without did accepted"),
+            Some(_) => {}
         }
         match message.cmd.as_str() {
             "preDeploy" => self.provision(ProvisioningKind::PreDeploy, conn),
@@ -1278,7 +1670,7 @@ impl MqttSession {
                 }
                 None
             }
-            // Unverified until T1.9: we do not answer time sync requests.
+            // Not answered: unanswered on the real AC, no ill effect seen (T1.9).
             "req_timesync" => {
                 tracing::debug!(cmd, len, "mqtt: req_timesync not answered");
                 None
@@ -1297,14 +1689,31 @@ impl MqttSession {
         let reply = complete_provisioning(&self.uuid, &self.topics, now_ms(), kind).to_string();
         let packet = self.to_device(conn, reply.as_bytes());
         if packet.is_none() {
-            tracing::warn!(
+            lock(conn).unsent_reply = Some(kind);
+            tracing::info!(
                 kind = kind.cmd(),
-                "mqtt: device is not subscribed to lime/devices/***; completeProvisioning not sent"
+                "mqtt: device is not subscribed to lime/devices/*** yet; \
+                 completeProvisioning will be sent after its SUBSCRIBE"
             );
         } else {
+            lock(conn).unsent_reply = None;
             tracing::info!(kind = kind.cmd(), "mqtt: completeProvisioning sent");
         }
         packet
+    }
+
+    /// After a SUBSCRIBE: the `completeProvisioning` held back by
+    /// [`Self::provision`], if the device now receives `lime/devices/<uuid>`.
+    fn send_unsent_reply(&self, conn: &Mutex<Connection>) -> Option<Vec<u8>> {
+        let kind = lock(conn).unsent_reply?;
+        let reply = complete_provisioning(&self.uuid, &self.topics, now_ms(), kind).to_string();
+        let packet = self.to_device(conn, reply.as_bytes())?;
+        lock(conn).unsent_reply = None;
+        tracing::info!(
+            kind = kind.cmd(),
+            "mqtt: completeProvisioning sent after SUBSCRIBE"
+        );
+        Some(packet)
     }
 
     /// See [`MqttBroker::send_packet`].
@@ -1356,9 +1765,138 @@ fn log_protocol_error(frame: &Frame, reason: &str) {
     );
 }
 
-/// The single common name of the peer certificate, if it has exactly one.
-fn peer_common_name(ssl: &SslRef) -> Option<String> {
-    let cert = ssl.peer_certificate()?;
+/// What a TLS client's certificate is, decided after the handshake.
+pub(crate) enum Peer {
+    /// Issued by our client CA for a CSR; `cn` is its single common name.
+    ClientCa { cn: Option<String> },
+    /// From any other issuer: accepted only by its pin (D21).
+    Foreign(Box<ForeignCert>),
+    /// From our PKI but not a valid client certificate, or unreadable.
+    Unusable,
+}
+
+/// The parts of a foreign client certificate the broker checks and logs.
+/// Never logged whole: `issuer` and `subject` go through uuid redaction.
+pub(crate) struct ForeignCert {
+    cn: Option<String>,
+    /// Lowercase hex SHA-256 of the DER `SubjectPublicKeyInfo`.
+    spki_sha256: String,
+    issuer: String,
+    subject: String,
+    not_after: String,
+    /// Outside its validity period now (tolerated, see `tls::foreign_chain_error`).
+    expired: bool,
+    /// For example `RSA-2048`, `EC-256`.
+    key: String,
+}
+
+impl ForeignCert {
+    pub(crate) fn from_cert(
+        cert: &X509Ref,
+    ) -> std::result::Result<Self, openssl::error::ErrorStack> {
+        let public = cert.public_key()?;
+        let spki = public.public_key_to_der()?;
+        let kind = match public.id() {
+            Id::RSA => "RSA".to_owned(),
+            Id::EC => "EC".to_owned(),
+            other => format!("key-type-{}", other.as_raw()),
+        };
+        let now = Asn1Time::days_from_now(0)?;
+        let expired = cert.not_after().compare(&now)? == std::cmp::Ordering::Less
+            || cert.not_before().compare(&now)? == std::cmp::Ordering::Greater;
+        Ok(Self {
+            cn: common_name(cert),
+            spki_sha256: hex::encode(openssl::sha::sha256(&spki)),
+            issuer: render_name(cert.issuer_name()),
+            subject: render_name(cert.subject_name()),
+            not_after: cert.not_after().to_string(),
+            expired,
+            key: format!("{kind}-{}", public.bits()),
+        })
+    }
+
+    fn fingerprint(&self) -> &str {
+        short_fingerprint(&self.spki_sha256)
+    }
+}
+
+/// The first 16 hex characters of a SHA-256 fingerprint.
+fn short_fingerprint(hex: &str) -> &str {
+    hex.get(..16).unwrap_or(hex)
+}
+
+/// Why a foreign client certificate was refused. Never carries the uuid.
+#[derive(Debug, PartialEq, Eq)]
+enum Refusal {
+    ClientId,
+    NoPinning,
+    NoPinOutsideWindow,
+    PinMismatch { pinned: String },
+    Store(String),
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClientId => f.write_str("the CONNECT clientId is not the configured ac.uuid"),
+            Self::NoPinning => f.write_str("this broker has no pin store"),
+            Self::NoPinOutsideWindow => f.write_str(
+                "no key pinned for this module yet; run `controlz ac serve --pin` (or --dns) \
+                 to pin it on its next connect",
+            ),
+            Self::PinMismatch { pinned } => write!(
+                f,
+                "the key differs from the pinned one ({pinned}); if the module really got a \
+                 new key, delete the module-pin file in the PKI directory and serve with --pin"
+            ),
+            Self::Store(e) => write!(f, "pin store: {e}"),
+        }
+    }
+}
+
+/// `CN=…, O=…` with short field names.
+fn render_name(name: &X509NameRef) -> String {
+    name.entries()
+        .map(|entry| {
+            let field = entry.object().nid().short_name().unwrap_or("?");
+            let value = entry
+                .data()
+                .to_string()
+                .unwrap_or_else(|_| "<binary>".to_owned());
+            format!("{field}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Our acceptor plus what classifies its clients' certificates.
+struct PeerTls {
+    acceptor: SslAcceptor,
+    client_ca: X509,
+    /// Subject names of our server and client CAs.
+    ours: Vec<X509Name>,
+}
+
+impl PeerTls {
+    /// What the handshake's client certificate is.
+    fn classify(&self, ssl: &SslRef) -> Peer {
+        let Some(cert) = ssl.peer_certificate() else {
+            return Peer::Unusable;
+        };
+        if tls::chains_to_client_ca(&cert, ssl.peer_cert_chain(), &self.client_ca) {
+            return Peer::ClientCa {
+                cn: common_name(&cert),
+            };
+        }
+        if tls::issued_by_any(&cert, &self.ours) {
+            return Peer::Unusable;
+        }
+        ForeignCert::from_cert(&cert).map_or(Peer::Unusable, |c| Peer::Foreign(Box::new(c)))
+    }
+}
+
+/// The single common name of a certificate, if it has exactly one.
+fn common_name(cert: &X509Ref) -> Option<String> {
     let mut names = cert.subject_name().entries_by_nid(Nid::COMMONNAME);
     let name = names.next()?;
     if names.next().is_some() {
@@ -1437,7 +1975,7 @@ impl Drop for MqttBroker {
 
 /// Accepts connections until aborted; aborting drops the `JoinSet`, which
 /// aborts every connection task.
-async fn accept_loop(listener: TcpListener, acceptor: Arc<SslAcceptor>, session: Arc<MqttSession>) {
+async fn accept_loop(listener: TcpListener, acceptor: Arc<PeerTls>, session: Arc<MqttSession>) {
     let max = session.limits.max_connections;
     let permits = Arc::new(Semaphore::new(max));
     let mut connections = JoinSet::new();
@@ -1466,25 +2004,164 @@ async fn accept_loop(listener: TcpListener, acceptor: Arc<SslAcceptor>, session:
 
 async fn serve_tcp(
     stream: TcpStream,
-    acceptor: Arc<SslAcceptor>,
+    acceptor: Arc<PeerTls>,
     session: Arc<MqttSession>,
     _permit: OwnedSemaphorePermit,
 ) {
-    let tls = match tls::accept(&acceptor, stream).await {
+    let tls = match tls::accept(&acceptor.acceptor, stream).await {
         Ok(tls) => tls,
         Err(e) => {
             tracing::debug!(error = %e, "mqtt: TLS handshake failed");
             return;
         }
     };
-    let peer_cn = peer_common_name(tls.ssl());
-    session.serve(tls, peer_cn).await;
+    let peer = acceptor.classify(tls.ssl());
+    session.serve(tls, peer).await;
+}
+
+/// The device side of an MQTT session, for tests here and in `controller`.
+#[cfg(test)]
+pub(crate) mod test_client {
+    use super::*;
+
+    /// Upper bound for anything a test waits on.
+    pub(crate) const WAIT: Duration = Duration::from_secs(5);
+
+    pub(crate) fn put_str(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&u16::try_from(s.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+
+    pub(crate) fn connect_packet(client_id: &str, keep_alive: u16) -> Vec<u8> {
+        connect_packet_as("MQTT", 4, client_id, keep_alive)
+    }
+
+    pub(crate) fn connect_packet_as(
+        name: &str,
+        level: u8,
+        client_id: &str,
+        keep_alive: u16,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        put_str(&mut body, name);
+        body.extend_from_slice(&[level, 0x02]);
+        body.extend_from_slice(&keep_alive.to_be_bytes());
+        put_str(&mut body, client_id);
+        encode(CONNECT << 4, &body)
+    }
+
+    pub(crate) fn subscribe_body(packet_id: u16, filters: &[(&str, u8)]) -> Vec<u8> {
+        let mut body = packet_id.to_be_bytes().to_vec();
+        for (filter, qos) in filters {
+            put_str(&mut body, filter);
+            body.push(*qos);
+        }
+        body
+    }
+
+    pub(crate) fn subscribe_packet(packet_id: u16, filters: &[(&str, u8)]) -> Vec<u8> {
+        encode(SUBSCRIBE << 4 | 0b0010, &subscribe_body(packet_id, filters))
+    }
+
+    /// A mock device: raw MQTT over any stream.
+    pub(crate) struct Client<S> {
+        pub(crate) stream: S,
+    }
+
+    impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
+        pub(crate) async fn send(&mut self, bytes: &[u8]) {
+            self.stream.write_all(bytes).await.unwrap();
+            self.stream.flush().await.unwrap();
+        }
+
+        pub(crate) async fn recv(&mut self) -> Frame {
+            read_frame(&mut self.stream, WAIT, WAIT)
+                .await
+                .expect("a packet from the broker")
+        }
+
+        /// Sends an MQTT 3.1.1 CONNECT and returns the CONNACK return code.
+        pub(crate) async fn connect(&mut self, client_id: &str) -> u8 {
+            self.connect_as("MQTT", 4, client_id).await
+        }
+
+        /// Sends CONNECT with this protocol name and level and returns the
+        /// CONNACK return code; session present must be 0.
+        pub(crate) async fn connect_as(&mut self, name: &str, level: u8, client_id: &str) -> u8 {
+            self.send(&connect_packet_as(name, level, client_id, 60))
+                .await;
+            let connack = self.recv().await;
+            assert_eq!(connack.header, CONNACK << 4);
+            assert_eq!(connack.body[0], 0, "session present is 0");
+            connack.body[1]
+        }
+
+        /// Subscribes to one filter and returns its SUBACK code.
+        pub(crate) async fn subscribe(&mut self, filter: &str, qos: u8) -> u8 {
+            self.send(&subscribe_packet(7, &[(filter, qos)])).await;
+            let suback = self.recv().await;
+            assert_eq!(suback.header, SUBACK << 4);
+            assert_eq!(&suback.body[..2], &[0, 7]);
+            suback.body[2]
+        }
+
+        pub(crate) async fn publish(&mut self, topic: &str, payload: &[u8]) {
+            self.send(&encode_publish(topic, payload, None)).await;
+        }
+
+        pub(crate) async fn recv_publish(&mut self) -> Publish {
+            let frame = self.recv().await;
+            match decode(&frame) {
+                Ok(Packet::Publish(p)) => p,
+                other => panic!("expected PUBLISH, got {other:?} ({frame:?})"),
+            }
+        }
+
+        /// PINGREQ → PINGRESP: proves the broker sent nothing in between.
+        pub(crate) async fn ping(&mut self) {
+            self.send(&[PINGREQ << 4, 0]).await;
+            let reply = self.recv().await;
+            assert_eq!(
+                (reply.header, reply.body.len()),
+                (PINGRESP << 4, 0),
+                "{reply:?}"
+            );
+        }
+
+        pub(crate) async fn expect_closed(&mut self) {
+            let mut buf = [0_u8; 256];
+            loop {
+                let read = tokio::time::timeout(WAIT, self.stream.read(&mut buf))
+                    .await
+                    .expect("the broker must close the connection");
+                if matches!(read, Ok(0) | Err(_)) {
+                    return;
+                }
+            }
+        }
+
+        /// The next PUBLISH from the broker as (topic, JSON payload); a
+        /// `QoS` 1 PUBLISH is acknowledged.
+        pub(crate) async fn recv_json(&mut self) -> (String, Value) {
+            let publish = self.recv_publish().await;
+            if let Some(id) = publish.packet_id {
+                self.send(&encode_puback(id)).await;
+            }
+            let value = serde_json::from_slice(&publish.payload).unwrap();
+            (publish.topic, value)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_client::{
+        Client, WAIT, connect_packet, put_str, subscribe_body, subscribe_packet,
+    };
     use super::*;
-    use crate::ac::pki::test_fixture::{FIXTURE, HOSTNAME, csr_pem, p256_key};
+    use crate::ac::pki::test_fixture::{
+        FIXTURE, FOREIGN_CA, HOSTNAME, csr_pem, mismatched_rsa_key, p256_key,
+    };
     use crate::ac::pki::{Ca, Identity};
     use crate::secret::Secret;
     use openssl::ssl::{SslConnector, SslMethod, SslVersion};
@@ -1497,11 +2174,11 @@ mod tests {
 
     const UUID: &str = "00000000-fake-0000-0000-000000000000";
     const OTHER: &str = "11111111-fake-1111-1111-111111111111";
-    /// Upper bound for anything a test waits on.
-    const WAIT: Duration = Duration::from_secs(5);
     /// The timeout under test in `Limits::short`.
     const SHORT: Duration = Duration::from_millis(300);
-    const PACKET_HEX: &str = "04aa1000ff0b";
+    /// The `device_packet` fixture's data: a full state report, in the
+    /// uppercase hex the real AC sends.
+    const PACKET_HEX: &str = "0000040000008702042A7A7E407DC17E847F50317F902EC840C880C8C08340838083C0868086C0870087C18F80894088408A0C8A503C8A90148CA0012C8CD01EACD0C8CA00D540D580C900CAD050CB1064CB40CB87CBCCCC00CC90788B40BF6001F4BFC0BFA001F4C000BE501EBE86CC50781B01BED079C340C0C0C380CCC0CD00CD40900042AC";
 
     macro_rules! fixture {
         ($name:literal) => {
@@ -1537,11 +2214,6 @@ mod tests {
 
     // ---- Client-side encoding ----
 
-    fn put_str(out: &mut Vec<u8>, s: &str) {
-        out.extend_from_slice(&u16::try_from(s.len()).unwrap().to_be_bytes());
-        out.extend_from_slice(s.as_bytes());
-    }
-
     fn connect_body(name: &str, level: u8, flags: u8, client_id: &str) -> Vec<u8> {
         let mut body = Vec::new();
         put_str(&mut body, name);
@@ -1550,28 +2222,6 @@ mod tests {
         body.extend_from_slice(&60_u16.to_be_bytes());
         put_str(&mut body, client_id);
         body
-    }
-
-    fn connect_packet(client_id: &str, keep_alive: u16) -> Vec<u8> {
-        let mut body = Vec::new();
-        put_str(&mut body, "MQTT");
-        body.extend_from_slice(&[4, 0x02]);
-        body.extend_from_slice(&keep_alive.to_be_bytes());
-        put_str(&mut body, client_id);
-        encode(CONNECT << 4, &body)
-    }
-
-    fn subscribe_body(packet_id: u16, filters: &[(&str, u8)]) -> Vec<u8> {
-        let mut body = packet_id.to_be_bytes().to_vec();
-        for (filter, qos) in filters {
-            put_str(&mut body, filter);
-            body.push(*qos);
-        }
-        body
-    }
-
-    fn subscribe_packet(packet_id: u16, filters: &[(&str, u8)]) -> Vec<u8> {
-        encode(SUBSCRIBE << 4 | 0b0010, &subscribe_body(packet_id, filters))
     }
 
     fn unsubscribe_packet(packet_id: u16, filter: &str) -> Vec<u8> {
@@ -1611,70 +2261,7 @@ mod tests {
 
     // ---- Mock device ----
 
-    struct Client<S> {
-        stream: S,
-    }
-
     impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
-        async fn send(&mut self, bytes: &[u8]) {
-            self.stream.write_all(bytes).await.unwrap();
-            self.stream.flush().await.unwrap();
-        }
-
-        async fn recv(&mut self) -> Frame {
-            read_frame(&mut self.stream, WAIT, WAIT)
-                .await
-                .expect("a packet from the broker")
-        }
-
-        /// Sends CONNECT and returns the CONNACK return code.
-        async fn connect(&mut self, client_id: &str) -> u8 {
-            self.send(&connect_packet(client_id, 60)).await;
-            let connack = self.recv().await;
-            assert_eq!(connack.header, CONNACK << 4);
-            assert_eq!(connack.body[0], 0, "session present is 0");
-            connack.body[1]
-        }
-
-        /// Subscribes to one filter and returns its SUBACK code.
-        async fn subscribe(&mut self, filter: &str, qos: u8) -> u8 {
-            self.send(&subscribe_packet(7, &[(filter, qos)])).await;
-            let suback = self.recv().await;
-            assert_eq!(suback.header, SUBACK << 4);
-            assert_eq!(&suback.body[..2], &[0, 7]);
-            suback.body[2]
-        }
-
-        async fn publish(&mut self, topic: &str, payload: &[u8]) {
-            self.send(&encode_publish(topic, payload, None)).await;
-        }
-
-        async fn recv_publish(&mut self) -> Publish {
-            let frame = self.recv().await;
-            match decode(&frame) {
-                Ok(Packet::Publish(p)) => p,
-                other => panic!("expected PUBLISH, got {other:?} ({frame:?})"),
-            }
-        }
-
-        /// PINGREQ → PINGRESP: proves the broker sent nothing in between.
-        async fn ping(&mut self) {
-            self.send(&[PINGREQ << 4, 0]).await;
-            assert_eq!(self.recv().await, frame(&[PINGRESP << 4, 0]));
-        }
-
-        async fn expect_closed(&mut self) {
-            let mut buf = [0_u8; 256];
-            loop {
-                let read = tokio::time::timeout(WAIT, self.stream.read(&mut buf))
-                    .await
-                    .expect("the broker must close the connection");
-                if matches!(read, Ok(0) | Err(_)) {
-                    return;
-                }
-            }
-        }
-
         /// The full provisioning exchange for `kind` on `topic`.
         async fn provision(&mut self, topic: &str, kind: ProvisioningKind) {
             let request = match kind {
@@ -1704,7 +2291,7 @@ mod tests {
     // ---- In-memory sessions ----
 
     fn session(limits: Limits) -> (Arc<MqttSession>, mpsc::Receiver<DeviceEvent>) {
-        MqttSession::new(UUID, limits).unwrap()
+        MqttSession::new(UUID, limits, None).unwrap()
     }
 
     fn attach(
@@ -1721,8 +2308,10 @@ mod tests {
     ) -> (Client<DuplexStream>, JoinHandle<()>) {
         let (client, server) = tokio::io::duplex(buffer);
         let session = Arc::clone(session);
-        let peer_cn = peer_cn.map(str::to_owned);
-        let task = tokio::spawn(async move { session.serve(server, peer_cn).await });
+        let peer = Peer::ClientCa {
+            cn: peer_cn.map(str::to_owned),
+        };
+        let task = tokio::spawn(async move { session.serve(server, peer).await });
         (Client { stream: client }, task)
     }
 
@@ -1784,6 +2373,7 @@ mod tests {
         MqttConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
+            pinning: None,
         }
     }
 
@@ -1835,8 +2425,18 @@ mod tests {
     }
 
     async fn tls_device(broker: &MqttBroker, id: &Identity) -> Client<SslStream<TcpStream>> {
+        tls_device_as(broker, id, "MQTT", 4).await
+    }
+
+    /// Like `tls_device`, speaking this protocol name and level.
+    async fn tls_device_as(
+        broker: &MqttBroker,
+        id: &Identity,
+        name: &str,
+        level: u8,
+    ) -> Client<SslStream<TcpStream>> {
         let mut client = tls_connect(broker.local_addr(), Some(id)).await.unwrap();
-        assert_eq!(client.connect(UUID).await, CONNACK_ACCEPTED);
+        assert_eq!(client.connect_as(name, level, UUID).await, CONNACK_ACCEPTED);
         assert_eq!(next(broker).await, DeviceEvent::Connected);
         assert_eq!(client.subscribe(&device_topic(), 1).await, 1);
         client
@@ -2064,6 +2664,264 @@ mod tests {
         no_event(&mut events);
     }
 
+    // ---- Acceptance: foreign client certificates, pinned (D21) ----
+
+    /// A fresh, empty pin directory for one test.
+    fn pin_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("controlz-mqtt-pins-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    async fn start_pinning(dir: &std::path::Path, window: bool) -> MqttBroker {
+        let config = MqttConfig {
+            pinning: Some(Pinning {
+                pins: ModulePins::new(dir),
+                window,
+            }),
+            ..config()
+        };
+        MqttSession::start(&config, &FIXTURE, UUID).await.unwrap()
+    }
+
+    fn pin_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .map_or_default(|entries| entries.map(|e| e.unwrap().path()).collect())
+    }
+
+    /// Waits until `needle` shows up in the logs.
+    async fn logged(logs: &Buffer, needle: &str) -> String {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let text = logs.text();
+            if text.contains(needle) {
+                return text;
+            }
+            assert!(Instant::now() < deadline, "no {needle:?} in: {text}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn spki_sha256(id: &Identity) -> String {
+        let der = id.cert().public_key().unwrap().public_key_to_der().unwrap();
+        hex::encode(openssl::sha::sha256(&der))
+    }
+
+    fn spki_fingerprint(id: &Identity) -> String {
+        spki_sha256(id)[..16].to_owned()
+    }
+
+    #[tokio::test]
+    async fn our_ca_client_still_connects_and_is_never_pinned() {
+        let dir = pin_dir("ours");
+        let broker = start_pinning(&dir, true).await;
+        let id = client_identity(&FIXTURE.client_ca, UUID);
+        let _device = tls_device(&broker, &id).await;
+        assert_eq!(
+            pin_files(&dir),
+            Vec::<std::path::PathBuf>::new(),
+            "the CSR path pins nothing"
+        );
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreign_cert_is_pinned_in_a_window_and_only_that_key_is_accepted_later() {
+        let (logs, _guard) = capture();
+        let dir = pin_dir("pinned");
+        let lg = client_identity(&FOREIGN_CA, UUID);
+        let fingerprint = spki_fingerprint(&lg);
+
+        let broker = start_pinning(&dir, true).await;
+        let mut device = tls_device(&broker, &lg).await;
+        device
+            .provision(&prov_topic(), ProvisioningKind::Deploy)
+            .await;
+        assert_eq!(
+            next(&broker).await,
+            DeviceEvent::Provisioned {
+                kind: ProvisioningKind::Deploy
+            }
+        );
+        let text = logged(&logs, "mqtt: module certificate pinned").await;
+        let event = text
+            .lines()
+            .find(|l| l.contains("mqtt: module certificate pinned"))
+            .unwrap();
+        assert!(
+            event.contains(" WARN "),
+            "warn level, shown by default: {event}"
+        );
+        assert!(
+            event.contains(&format!("fingerprint=\"{fingerprint}\"")),
+            "{event}"
+        );
+        assert!(
+            event.contains(&format!("spki_sha256={}", spki_sha256(&lg))),
+            "full SPKI SHA-256: {event}"
+        );
+        assert!(event.contains("cn=***"), "{event}");
+        assert!(text.contains("issuer=CN=Fake LG test CA"), "{text}");
+        assert!(text.contains("subject=CN=***"), "{text}");
+        assert!(text.contains("key=EC-256"), "{text}");
+        assert!(text.contains("expired=false"), "{text}");
+        assert!(text.contains("not_after="), "{text}");
+        assert!(!text.contains(UUID), "no uuid in the logs: {text}");
+        let files = pin_files(&dir);
+        assert_eq!(files.len(), 1, "{files:?}");
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&files[0]).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600);
+        drop(device);
+        broker.shutdown().await;
+
+        // After a restart outside any window: the pinned key still connects.
+        let broker = start_pinning(&dir, false).await;
+        let device = tls_device(&broker, &lg).await;
+        logged(&logs, "mqtt: module certificate accepted by its pin").await;
+
+        // Same uuid and issuer, other key: refused before any MQTT byte, even
+        // in a window, and the pin stays.
+        drop(device);
+        broker.shutdown().await;
+        let broker = start_pinning(&dir, true).await;
+        let impostor = client_identity(&FOREIGN_CA, UUID);
+        let mut client = tls_connect(broker.local_addr(), Some(&impostor))
+            .await
+            .unwrap();
+        client.expect_closed().await;
+        let text = logged(&logs, "differs from the pinned one").await;
+        assert!(text.contains(&format!("({fingerprint})")), "{text}");
+        assert!(
+            text.contains(&format!("fingerprint=\"{}\"", spki_fingerprint(&impostor))),
+            "{text}"
+        );
+        assert_eq!(
+            ModulePins::new(&dir).get(UUID).unwrap().unwrap()[..16],
+            fingerprint
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), broker.next_event())
+                .await
+                .is_err(),
+            "no device event"
+        );
+        assert!(!logs.text().contains(UUID));
+        broker.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn foreign_cert_with_another_client_id_is_refused_and_not_pinned() {
+        let (logs, _guard) = capture();
+        let dir = pin_dir("clientid");
+        let broker = start_pinning(&dir, true).await;
+        let lg = client_identity(&FOREIGN_CA, UUID);
+        let mut client = tls_connect(broker.local_addr(), Some(&lg)).await.unwrap();
+        assert_eq!(client.connect(OTHER).await, CONNACK_NOT_AUTHORIZED);
+        client.expect_closed().await;
+        logged(&logs, "clientId is not the configured ac.uuid").await;
+        assert_eq!(
+            pin_files(&dir),
+            Vec::<std::path::PathBuf>::new(),
+            "nothing pinned"
+        );
+        assert!(!logs.text().contains(UUID) && !logs.text().contains(OTHER));
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreign_cert_with_a_wildcard_cn_is_pinned_and_its_cn_logged() {
+        // Like the real module: an AWS IoT-style certificate whose CN is a
+        // generic wildcard name, not the uuid. Only the clientId counts.
+        // It speaks MQTT 3.1 here: pinning does not depend on the level.
+        let (logs, _guard) = capture();
+        let dir = pin_dir("cn");
+        let broker = start_pinning(&dir, true).await;
+        let lg = client_identity(&FOREIGN_CA, "*.example.com");
+        let device = tls_device_as(&broker, &lg, "MQIsdp", 3).await;
+        let text = logged(&logs, "mqtt: module certificate pinned").await;
+        assert!(text.contains("cn=*.example.com"), "{text}");
+        assert!(text.contains("subject=CN=*.example.com"), "{text}");
+        assert!(!text.contains("refused"), "{text}");
+        assert_eq!(
+            ModulePins::new(&dir).get(UUID).unwrap(),
+            Some(spki_sha256(&lg))
+        );
+        drop(device);
+        broker.shutdown().await;
+
+        // Outside a window, the pinned key with that CN is still accepted.
+        let broker = start_pinning(&dir, false).await;
+        let _device = tls_device(&broker, &lg).await;
+        logged(&logs, "mqtt: module certificate accepted by its pin").await;
+        assert!(!logs.text().contains(UUID), "no uuid in the logs");
+        broker.shutdown().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cn_containing_the_uuid_is_logged_redacted() {
+        let (logs, _guard) = capture();
+        let dir = pin_dir("cnuuid");
+        let broker = start_pinning(&dir, false).await;
+        let lg = client_identity(&FOREIGN_CA, &format!("lge-{UUID}"));
+        let mut client = tls_connect(broker.local_addr(), Some(&lg)).await.unwrap();
+        client.expect_closed().await;
+        let text = logged(&logs, "no key pinned for this module yet").await;
+        assert!(text.contains("cn=lge-***"), "{text}");
+        assert!(!text.contains(UUID), "{text}");
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreign_cert_without_pin_outside_a_window_is_refused() {
+        let (logs, _guard) = capture();
+        let dir = pin_dir("nowindow");
+        let broker = start_pinning(&dir, false).await;
+        let lg = client_identity(&FOREIGN_CA, UUID);
+        let mut client = tls_connect(broker.local_addr(), Some(&lg)).await.unwrap();
+        client.expect_closed().await;
+        let text = logged(&logs, "no key pinned for this module yet").await;
+        assert!(text.contains("controlz ac serve --pin"), "{text}");
+        assert!(!text.contains("mqtt: packet received"), "{text}");
+        assert_eq!(pin_files(&dir), Vec::<std::path::PathBuf>::new());
+        // Without a certificate at all, the handshake itself fails.
+        assert!(tls_connect(broker.local_addr(), None).await.is_err());
+        broker.shutdown().await;
+
+        // And a broker without a pin store refuses foreign certificates.
+        let broker = start().await;
+        let mut client = tls_connect(broker.local_addr(), Some(&lg)).await.unwrap();
+        client.expect_closed().await;
+        logged(&logs, "this broker has no pin store").await;
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn foreign_cert_without_its_private_key_fails_the_handshake() {
+        let dir = pin_dir("nokey");
+        let broker = start_pinning(&dir, true).await;
+        let rsa =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let pem = FOREIGN_CA
+            .sign_csr(&csr_pem(&rsa, &[UUID]), UUID, 30)
+            .unwrap();
+        let wrong = mismatched_rsa_key(&rsa);
+        let key_pem =
+            Secret::new(String::from_utf8(wrong.private_key_to_pem_pkcs8().unwrap()).unwrap());
+        let id = Identity::from_pem(&pem, &key_pem).unwrap();
+        assert!(tls_connect(broker.local_addr(), Some(&id)).await.is_err());
+        assert_eq!(
+            pin_files(&dir),
+            Vec::<std::path::PathBuf>::new(),
+            "nothing pinned"
+        );
+        broker.shutdown().await;
+    }
+
     #[tokio::test]
     async fn silent_or_partial_connect_times_out() {
         let (s, mut events) = session(Limits::short(SHORT));
@@ -2136,7 +2994,11 @@ mod tests {
             IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             IpAddr::V6(Ipv6Addr::UNSPECIFIED),
         ] {
-            let c = MqttConfig { bind, port: 0 };
+            let c = MqttConfig {
+                bind,
+                port: 0,
+                pinning: None,
+            };
             assert!(c.validate().is_err());
             let started = MqttSession::start(&c, &FIXTURE, UUID).await;
             assert!(
@@ -2220,6 +3082,27 @@ mod tests {
         assert_eq!(event(&mut events).await, DeviceEvent::Disconnected);
 
         let text = logs.text();
+        // Payloads appear only on trace-level "mqtt: payload" lines, with
+        // every did (ours and the stranger's) masked.
+        let (payload_lines, other_lines): (Vec<&str>, Vec<&str>) =
+            text.lines().partition(|l| l.contains("mqtt: payload"));
+        assert!(
+            payload_lines.iter().all(|l| l.contains("TRACE")),
+            "{payload_lines:?}"
+        );
+        assert!(
+            payload_lines
+                .iter()
+                .any(|l| l.contains(PACKET_HEX) && l.contains(r#""did":"***""#)),
+            "{payload_lines:?}"
+        );
+        let other_text = other_lines.join("\n");
+        for secret in [secret_hex, PACKET_HEX, "abcd"] {
+            assert!(
+                !other_text.contains(secret),
+                "leaked {secret}: {other_text}"
+            );
+        }
         for expected in [
             format!("cmd=\"fooBar\" len={}", unknown.len()),
             "cmd=\"<invalid>\"".to_owned(),
@@ -2228,15 +3111,174 @@ mod tests {
             "topic=\"other/***/x\"".to_owned(),
             "unparseable device message dropped".to_owned(),
             "cmd=\"req_timesync\"".to_owned(),
-            "DevicePacket { hex_len: 12 }".to_owned(),
+            format!("DevicePacket {{ hex_len: {} }}", PACKET_HEX.len()),
             "packet_type=15 len=2".to_owned(),
             "packet=\"SUBSCRIBE\"".to_owned(),
         ] {
             assert!(text.contains(&expected), "missing {expected}: {text}");
         }
-        for secret in [UUID, OTHER, secret_hex, PACKET_HEX, "abcd"] {
+        for secret in [UUID, OTHER] {
             assert!(!text.contains(secret), "leaked {secret}: {text}");
         }
+    }
+
+    #[test]
+    fn payload_redaction_masks_identifiers_at_any_depth() {
+        let mut value = json!({
+            "did": UUID,
+            "cmd": "preDeploy",
+            "data": {
+                "Mac": "xx:xx",
+                "nested": [{"ssid": "home", "keep": 1}],
+                "uuid": OTHER,
+                "errSSID": "home",
+                "bootId": "1234",
+                "eepromChecksum": 99,
+                "BSSID": "x",
+                "macAddr": "x",
+                "ipAddr": "x",
+                "wifi_ip": "x",
+                "deviceSerialNo": "x",
+                "apiServer": "x",
+                "echo": "192.0.2.5", // privacy:allow (TEST-NET-1)
+                "echo6": "2001:db8::1",
+                "routes": ["https://controlz.test:443", "ssl://192-0-2-5.sslip.io:8883"],
+                "note": "at 192.0.2.5:8883 now", // privacy:allow (TEST-NET-1)
+                "hw": "AA-BB-CC-00-11-22", // privacy:allow (fake MAC)
+                "name": "ac.example.org",
+                "model": "RAC_000000_WW",
+                "protocolVer": "4.5",
+                "modemVer": "clip_hna_v1.9.223",
+                "subErrorCode": "W008",
+                "time": "12:30:00",
+                "data": "0401aabbccdd",
+            },
+        });
+        redact_ids(&mut value);
+        assert_eq!(
+            value,
+            json!({
+                "did": "***",
+                "cmd": "preDeploy",
+                "data": {
+                    "Mac": "***",
+                    "nested": [{"ssid": "***", "keep": 1}],
+                    "uuid": "***",
+                    "errSSID": "***",
+                    "bootId": "***",
+                    "eepromChecksum": "***",
+                    "BSSID": "***",
+                    "macAddr": "***",
+                    "ipAddr": "***",
+                    "wifi_ip": "***",
+                    "deviceSerialNo": "***",
+                    "apiServer": "***",
+                    "echo": "***",
+                    "echo6": "***",
+                    "routes": ["***", "***"],
+                    "note": "***",
+                    "hw": "***",
+                    "name": "***",
+                    "model": "RAC_000000_WW",
+                    "protocolVer": "4.5",
+                    "modemVer": "clip_hna_v1.9.223",
+                    "subErrorCode": "W008",
+                    "time": "12:30:00",
+                    "data": "0401aabbccdd",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn key_segments_split_at_separators_and_case() {
+        let segs: Vec<&str> = key_segments("macAddr_ip-v4").collect();
+        assert_eq!(segs, ["mac", "Addr", "ip", "v4"]);
+        assert!(is_identifying_key("IPAddr") && is_identifying_key("ipAddr"));
+        assert!(is_identifying_key("ip") && is_identifying_key("localIp"));
+        assert!(!is_identifying_key("tip") && !is_identifying_key("ship_mode"));
+    }
+
+    /// T1.5 check (a): `preDeploy` before SUBSCRIBE is answered right after
+    /// the SUBACK, once.
+    #[tokio::test]
+    async fn provisioning_before_subscribe_is_answered_on_subscribe() {
+        let (s, mut events) = session(Limits::PRODUCTION);
+        let (mut device, _task) = attach(&s, Some(UUID));
+        assert_eq!(device.connect(UUID).await, CONNACK_ACCEPTED);
+        assert_eq!(event(&mut events).await, DeviceEvent::Connected);
+        device.publish(&prov_topic(), fixture!("predeploy")).await;
+        device.ping().await;
+        // A subscription that does not cover lime/devices/<uuid> changes nothing.
+        assert_eq!(device.subscribe("other/topic", 1).await, 1);
+        device.ping().await;
+        assert_eq!(device.subscribe(&device_topic(), 1).await, 1);
+        let reply = device.recv_publish().await;
+        assert_eq!(reply.topic, device_topic());
+        let body: Value = serde_json::from_slice(&reply.payload).unwrap();
+        assert_eq!(body["cmd"], "completeProvisioning");
+        assert_eq!(body["data"]["provisioningType"], "preDeploy");
+        device.send(&encode_puback(reply.packet_id.unwrap())).await;
+        // Subscribing again sends nothing more.
+        assert_eq!(device.subscribe(&device_topic(), 1).await, 1);
+        device.ping().await;
+        device
+            .publish(&prov_topic(), fixture!("complete_provisioning_ack"))
+            .await;
+        assert_eq!(
+            event(&mut events).await,
+            DeviceEvent::Provisioned {
+                kind: ProvisioningKind::PreDeploy
+            }
+        );
+    }
+
+    /// T1.5 check (b): no `did` is accepted on our per-uuid topics; another
+    /// `did` is still dropped.
+    #[tokio::test]
+    async fn messages_without_did_are_accepted() {
+        let (s, mut events) = session(Limits::PRODUCTION);
+        let mut device = connected(&s).await;
+        assert_eq!(event(&mut events).await, DeviceEvent::Connected);
+        let without_did = |cmd: &str, data: Value| {
+            json!({"mid": 1, "cmd": cmd, "type": 0, "data": data})
+                .to_string()
+                .into_bytes()
+        };
+        device
+            .publish(&prov_topic(), &without_did("preDeploy", json!({})))
+            .await;
+        let reply = device.recv_publish().await;
+        device.send(&encode_puback(reply.packet_id.unwrap())).await;
+        device
+            .publish(
+                &prov_topic(),
+                &without_did("completeProvisioning_ack", json!({"result": 0})),
+            )
+            .await;
+        assert_eq!(
+            event(&mut events).await,
+            DeviceEvent::Provisioned {
+                kind: ProvisioningKind::PreDeploy
+            }
+        );
+        device
+            .publish(&msg_topic(), &without_did("device_packet", json!("00ff")))
+            .await;
+        assert_eq!(
+            event(&mut events).await,
+            DeviceEvent::DevicePacket {
+                hex: "00ff".to_owned()
+            }
+        );
+        device
+            .publish(
+                &msg_topic(),
+                &message(OTHER, "device_packet", &json!("00ff")),
+            )
+            .await;
+        device.ping().await;
+        no_event(&mut events);
     }
 
     // ---- Protocol behaviour (in memory) ----
@@ -2274,20 +3316,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_is_checked_first() {
+    async fn mqtt_3_1_client_connects_and_subscribes() {
+        let (logs, _guard) = capture();
         let (s, mut events) = session(Limits::PRODUCTION);
-        // MQTT 3.1 (level 3) and a wrong protocol name get CONNACK 0x01.
-        for body in [
-            connect_body("MQTT", 3, 0x02, UUID),
-            connect_body("MQIsdp", 4, 0x02, UUID),
-        ] {
+        let (mut device, _task) = attach(&s, Some(UUID));
+        // `connect_as` also checks session present = 0 (reserved in 3.1).
+        assert_eq!(device.connect_as("MQIsdp", 3, UUID).await, CONNACK_ACCEPTED);
+        assert_eq!(event(&mut events).await, DeviceEvent::Connected);
+        assert_eq!(device.subscribe(&device_topic(), 1).await, 1);
+        device.ping().await;
+        let line = logs
+            .text()
+            .lines()
+            .find(|l| l.contains("mqtt: client speaks"))
+            .map_or_default(str::to_owned);
+        assert!(line.contains(" DEBUG "), "{line}");
+        assert!(line.ends_with("mqtt: client speaks MQTT 3.1"), "{line}");
+    }
+
+    #[tokio::test]
+    async fn connect_is_checked_first() {
+        let (logs, _guard) = capture();
+        let (s, mut events) = session(Limits::PRODUCTION);
+        // Mixed-up 3.1/3.1.1 names and levels, and MQTT 5, get CONNACK 0x01;
+        // the warning names what the client sent.
+        for (name, level) in [("MQTT", 3), ("MQIsdp", 4), ("MQTT", 5)] {
             let (mut client, _task) = attach(&s, Some(UUID));
-            client.send(&encode(CONNECT << 4, &body)).await;
+            client
+                .send(&encode(
+                    CONNECT << 4,
+                    &connect_body(name, level, 0x02, UUID),
+                ))
+                .await;
             assert_eq!(
                 client.recv().await,
                 frame(&encode_connack(CONNACK_BAD_PROTOCOL))
             );
             client.expect_closed().await;
+            let needle = format!(
+                "mqtt: CONNECT refused: not MQTT 3.1.1 or 3.1 protocol={name} level={level}"
+            );
+            let text = logs.text();
+            let line = text.lines().find(|l| l.contains(&needle));
+            assert!(
+                line.is_some_and(|l| l.contains(" WARN ")),
+                "no {needle:?} warning in: {text}"
+            );
         }
         // Any other first packet, or a malformed CONNECT: closed, no CONNACK.
         for bytes in [
@@ -2311,7 +3385,7 @@ mod tests {
         let (mut device, _task) = attach(&s, Some(UUID));
         assert_eq!(device.connect(UUID).await, CONNACK_ACCEPTED);
 
-        // Not subscribed: no completeProvisioning, and commands fail.
+        // Not subscribed: no completeProvisioning yet, and commands fail.
         device.publish(&prov_topic(), fixture!("predeploy")).await;
         device.ping().await;
         assert!(matches!(
@@ -2319,9 +3393,11 @@ mod tests {
             Err(ControlError::Network { .. })
         ));
 
-        // QoS 0 wildcard subscription: replies at QoS 0. A QoS 1 request
-        // gets its PUBACK first.
+        // QoS 0 wildcard subscription: the held-back reply follows the
+        // SUBACK at QoS 0. A QoS 1 request gets its PUBACK first.
         assert_eq!(device.subscribe("lime/devices/+", 0).await, 0);
+        let held_back = device.recv_publish().await;
+        assert_eq!((held_back.qos, held_back.packet_id), (0, None));
         device
             .send(&publish_qos1(&prov_topic(), fixture!("predeploy"), 42))
             .await;
@@ -2335,8 +3411,13 @@ mod tests {
         device.publish(&prov_topic(), fixture!("deploy")).await;
         device.ping().await;
 
-        // Requested QoS 2 is granted as 1; past the cap, 0x80.
+        // Requested QoS 2 is granted as 1 (and the deploy reply held back
+        // while unsubscribed follows at QoS 1); past the cap, 0x80.
         assert_eq!(device.subscribe("lime/#", 2).await, 1);
+        let held_back = device.recv_publish().await;
+        assert_eq!(held_back.qos, 1);
+        let body: Value = serde_json::from_slice(&held_back.payload).unwrap();
+        assert_eq!(body["data"]["provisioningType"], "deploy");
         // 1 (lime/#) + 8 + 7 fill the 16 slots; the 16th new filter fails.
         let filters: Vec<String> = (0..MAX_SUBSCRIPTIONS).map(|i| format!("f/{i}")).collect();
         let (first, second) = filters.split_at(MAX_FILTERS_PER_PACKET);
@@ -2396,6 +3477,131 @@ mod tests {
             .await;
         device.ping().await;
         no_event(&mut events);
+    }
+
+    // ---- Trailing NUL (T1.9 device finding) ----
+
+    /// `payload` as the real firmware sends it: plus one NUL terminator.
+    fn with_nul(payload: &[u8]) -> Vec<u8> {
+        let mut bytes = payload.to_vec();
+        bytes.push(0);
+        bytes
+    }
+
+    #[test]
+    fn trailing_nuls_are_trimmed_and_nothing_else() {
+        assert_eq!(trim_trailing_nuls(b"{}\0"), b"{}");
+        assert_eq!(trim_trailing_nuls(b"{}\0\0\0"), b"{}");
+        assert_eq!(trim_trailing_nuls(b"{}"), b"{}");
+        assert_eq!(trim_trailing_nuls(b"{\0}\0"), b"{\0}");
+        assert_eq!(trim_trailing_nuls(b"\0{}"), b"\0{}");
+        assert_eq!(trim_trailing_nuls(b"\0\0"), b"");
+        assert_eq!(trim_trailing_nuls(b""), b"");
+    }
+
+    /// Every fixture with the real AC's shape parses once its one trailing
+    /// NUL is trimmed, and only then.
+    #[test]
+    fn real_shape_fixtures_parse_with_their_nul() {
+        let cases = [
+            (fixture!("deploy"), "deploy"),
+            (
+                fixture!("complete_provisioning_ack"),
+                "completeProvisioning_ack",
+            ),
+            (fixture!("req_timesync"), "req_timesync"),
+            (fixture!("device_packet"), "device_packet"),
+        ];
+        for (bytes, cmd) in cases {
+            let sent = with_nul(bytes);
+            let m: DeviceMessage = serde_json::from_slice(trim_trailing_nuls(&sent))
+                .unwrap_or_else(|e| panic!("{cmd}: {e}"));
+            assert_eq!((m.cmd.as_str(), m.did.as_deref()), (cmd, Some(UUID)));
+            assert!(
+                serde_json::from_slice::<DeviceMessage>(&sent).is_err(),
+                "{cmd}: the NUL is what a strict parser rejects"
+            );
+        }
+        let deploy: Value = serde_json::from_slice(fixture!("deploy")).unwrap();
+        assert!(deploy["data"]["appInfo"].is_object());
+        assert!(deploy["data"]["extraProfile"]["profiling"].is_array());
+    }
+
+    /// The real AC's flow over loopback TLS, every device message ending
+    /// in a NUL: `deploy` → `completeProvisioning` → ack (on the message
+    /// topic, as the real AC sends it) → `device_packet` in uppercase hex.
+    #[tokio::test]
+    async fn nul_terminated_device_messages_are_accepted_end_to_end() {
+        let broker = start().await;
+        let id = client_identity(&FIXTURE.client_ca, UUID);
+        let mut device = tls_device(&broker, &id).await;
+
+        device
+            .publish(&prov_topic(), &with_nul(fixture!("deploy")))
+            .await;
+        let reply = device.recv_publish().await;
+        assert_eq!(reply.topic, device_topic());
+        assert_eq!(reply.qos, 1);
+        assert_eq!(reply.payload.last(), Some(&b'}'), "we add no NUL");
+        let body: Value = serde_json::from_slice(&reply.payload).unwrap();
+        assert_eq!(body["cmd"], "completeProvisioning");
+        assert_eq!(body["did"], UUID);
+        assert_eq!(body["data"]["provisioningType"], "deploy");
+        device.send(&encode_puback(reply.packet_id.unwrap())).await;
+
+        device
+            .publish(
+                &msg_topic(),
+                &with_nul(fixture!("complete_provisioning_ack")),
+            )
+            .await;
+        assert_eq!(
+            next(&broker).await,
+            DeviceEvent::Provisioned {
+                kind: ProvisioningKind::Deploy
+            }
+        );
+        device
+            .publish(&msg_topic(), &with_nul(fixture!("req_timesync")))
+            .await;
+        device
+            .publish(&msg_topic(), &with_nul(fixture!("device_packet")))
+            .await;
+        assert!(PACKET_HEX.bytes().any(|b| b.is_ascii_uppercase()));
+        assert_eq!(
+            next(&broker).await,
+            DeviceEvent::DevicePacket {
+                hex: PACKET_HEX.to_owned()
+            }
+        );
+        broker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn inner_nuls_and_nul_only_payloads_are_still_dropped() {
+        let (logs, _guard) = capture();
+        let (s, mut events) = session(Limits::PRODUCTION);
+        let mut device = connected(&s).await;
+        assert_eq!(event(&mut events).await, DeviceEvent::Connected);
+        let deploy = fixture!("deploy").to_vec();
+        let comma = deploy.iter().position(|&b| b == b',').unwrap();
+        let mut inner = deploy.clone();
+        inner.insert(comma + 1, 0);
+        let inner_and_trailing = with_nul(&inner);
+        for payload in [inner, inner_and_trailing, vec![0], vec![0; 4]] {
+            device.publish(&prov_topic(), &payload).await;
+        }
+        // No completeProvisioning came back and no event was emitted.
+        device.ping().await;
+        no_event(&mut events);
+        let text = logs.text();
+        assert_eq!(
+            text.matches("mqtt: unparseable device message dropped")
+                .count(),
+            4,
+            "{text}"
+        );
+        assert!(!text.contains("completeProvisioning sent"), "{text}");
     }
 
     // ---- Codec ----
@@ -2462,12 +3668,39 @@ mod tests {
             decoded(&encode(CONNECT << 4, &body)),
             Ok(Packet::Connect {
                 client_id: UUID.to_owned(),
-                keep_alive: 30
+                keep_alive: 30,
+                level: 4
+            })
+        );
+        // MQTT 3.1: same layout; a 36-char client id is fine (no 23 limit).
+        assert_eq!(
+            decoded(&encode(
+                CONNECT << 4,
+                &connect_body("MQIsdp", 3, 0x02, UUID)
+            )),
+            Ok(Packet::Connect {
+                client_id: UUID.to_owned(),
+                keep_alive: 60,
+                level: 3
             })
         );
         assert_eq!(
             decoded(&encode(CONNECT << 4, &connect_body("MQTT", 5, 0x02, UUID))),
-            Err(DecodeError::UnacceptableProtocol)
+            Err(DecodeError::UnacceptableProtocol {
+                name: "MQTT".to_owned(),
+                level: 5
+            })
+        );
+        // The refused name is logged sanitized and truncated.
+        assert_eq!(
+            decoded(&encode(
+                CONNECT << 4,
+                &connect_body("MQ\nTT\u{e9}-0123456789abcdefXYZ", 4, 0x02, UUID)
+            )),
+            Err(DecodeError::UnacceptableProtocol {
+                name: "MQ?TT?-012345678".to_owned(),
+                level: 4
+            })
         );
         for (flags, what) in [
             (0x03, "reserved flag"),
@@ -2585,6 +3818,46 @@ mod tests {
         );
     }
 
+    /// MQTT 3.1 clients may set DUP on a re-sent SUBSCRIBE/UNSUBSCRIBE;
+    /// other flag values stay protocol errors.
+    #[test]
+    fn subscribe_and_unsubscribe_accept_dup() {
+        let sub = subscribe_body(3, &[("a", 1)]);
+        assert_eq!(
+            decoded(&encode(SUBSCRIBE << 4 | 0b1010, &sub)),
+            Ok(Packet::Subscribe {
+                packet_id: 3,
+                filters: vec![("a".to_owned(), 1)],
+            })
+        );
+        let mut unsub = 4_u16.to_be_bytes().to_vec();
+        put_str(&mut unsub, "a/#");
+        assert_eq!(
+            decoded(&encode(UNSUBSCRIBE << 4 | 0b1010, &unsub)),
+            Ok(Packet::Unsubscribe {
+                packet_id: 4,
+                filters: vec!["a/#".to_owned()],
+            })
+        );
+        for flags in [0b0000, 0b0011, 0b1000, 0b1110] {
+            assert!(
+                protocol_error(&encode(SUBSCRIBE << 4 | flags, &sub)),
+                "{flags:#06b}"
+            );
+            assert!(
+                protocol_error(&encode(UNSUBSCRIBE << 4 | flags, &unsub)),
+                "{flags:#06b}"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_labels() {
+        assert_eq!(protocol_label(3), "MQTT 3.1");
+        assert_eq!(protocol_label(4), "MQTT 3.1.1");
+        assert_eq!(protocol_label(5), "MQTT (unknown level)");
+    }
+
     #[test]
     fn topic_filters_and_matching() {
         for ok in ["a", "a/b", "+", "#", "a/+/c", "a/#", "+/+", "/", "a//b"] {
@@ -2639,12 +3912,12 @@ mod tests {
         let long = "a".repeat(MAX_UUID_BYTES + 1);
         for bad in ["", "a/b", "a b", "a+b", "a#b", "a?b", "a\0b", long.as_str()] {
             assert!(
-                MqttSession::new(bad, Limits::PRODUCTION).is_err(),
+                MqttSession::new(bad, Limits::PRODUCTION, None).is_err(),
                 "{bad:?}"
             );
         }
         let longest = "a".repeat(MAX_UUID_BYTES);
-        let (s, _) = MqttSession::new(&longest, Limits::PRODUCTION).unwrap();
+        let (s, _) = MqttSession::new(&longest, Limits::PRODUCTION, None).unwrap();
         for topic in s.topics.provisioning.iter().chain(&s.topics.message) {
             assert!(valid_topic_name(topic), "{topic}");
         }

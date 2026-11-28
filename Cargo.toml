@@ -27,6 +27,8 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 # AC TLV codec (T1.6): hex payloads of device_packet / packet.
 hex = "0.4.3"
+# AC provisioning DNS fallback (T1.8): DNS message parsing only (no resolver/server).
+hickory-proto = { version = "0.26.4", default-features = false, features = ["std"] }
 # CLI only (D9): keep out of controlz_core.
 clap = { version = "4.6.10", features = ["derive"] }
 security-framework = "3.7.0"

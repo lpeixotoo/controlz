@@ -1,7 +1,7 @@
 //! Our certificate authority for the local cloud (KB: AC — TLS / certificates).
 //!
 //! Two RSA-2048 CAs, both `pathlen:0`: the server CA signs only the server
-//! certificate (hostname as DNS SAN; the module's ECDHE-RSA suites need an
+//! certificate (hostname as DNS SAN, or IP SAN for an IP; the module's ECDHE-RSA suites need an
 //! RSA key) and is the CA the module is told to trust; the client CA signs
 //! only the client certificates the module asks for with a CSR, and is never
 //! handed to the module. So a client certificate can never pass as our
@@ -12,6 +12,7 @@
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
+use std::net::IpAddr;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -97,13 +98,16 @@ impl Identity {
         Ok(Self { cert, key })
     }
 
-    /// Whether the certificate's DNS SANs include `hostname`.
+    /// Whether the certificate's SANs cover `host`: an IP SAN with the same
+    /// address when `host` is an IP address, otherwise a DNS SAN equal to it
+    /// (ASCII case-insensitive).
     #[must_use]
-    pub fn has_dns_san(&self, hostname: &str) -> bool {
+    pub fn has_san(&self, host: &str) -> bool {
+        let ip = host.parse::<IpAddr>().ok().map(|ip| ip_octets(&ip));
         self.cert.subject_alt_names().is_some_and(|names| {
-            names.iter().any(|n| {
-                n.dnsname()
-                    .is_some_and(|d| d.eq_ignore_ascii_case(hostname))
+            names.iter().any(|n| match &ip {
+                Some(octets) => n.ipaddress() == Some(octets.as_slice()),
+                None => n.dnsname().is_some_and(|d| d.eq_ignore_ascii_case(host)),
             })
         })
     }
@@ -183,7 +187,9 @@ impl Ca {
         &self.0.cert
     }
 
-    /// Issues an RSA-2048 server certificate for `hostname` (DNS SAN and CN).
+    /// Issues an RSA-2048 server certificate for `hostname` (its CN). The SAN
+    /// is an IP SAN when `hostname` is an IP address (the module is then
+    /// pointed at a bare IP), otherwise a DNS SAN.
     ///
     /// # Errors
     /// [`ControlError::Invalid`] if `hostname` is empty or signing fails.
@@ -199,8 +205,13 @@ impl Ca {
 
         let mut b = builder(&name, self.0.cert.subject_name(), &key, SERVER_DAYS)?;
         self.leaf_extensions(&mut b, ExtendedKeyUsage::new().server_auth())?;
-        let san = SubjectAlternativeName::new()
-            .dns(hostname)
+        let mut san = SubjectAlternativeName::new();
+        if hostname.parse::<IpAddr>().is_ok() {
+            san.ip(hostname);
+        } else {
+            san.dns(hostname);
+        }
+        let san = san
             .build(&b.x509v3_context(Some(&self.0.cert), None))
             .map_err(invalid)?;
         b.append_extension(san).map_err(invalid)?;
@@ -381,7 +392,8 @@ impl Pki {
         let server = match existing {
             Some(id) if !ca_is_new && server_is_current(&id, &ca, hostname)? => id,
             _ => {
-                tracing::info!(hostname, "issuing a new server certificate");
+                tracing::info!("issuing a new server certificate");
+                tracing::debug!(hostname, "server certificate hostname");
                 let id = ca.issue_server(hostname)?;
                 write_pair(dir, SERVER_CERT, SERVER_KEY, &id)?;
                 id
@@ -410,6 +422,118 @@ impl Pki {
     }
 }
 
+/// The pinned public keys of modules whose client certificate is not ours
+/// (D21: the module keeps the LG-issued certificate from its original
+/// `ThinQ` registration and never sends a CSR).
+///
+/// One small file per module in the PKI directory, named
+/// `module-pin-<first 16 hex of SHA-256(uuid)>.txt` so the uuid never
+/// appears in a file name, holding the lowercase hex SHA-256 of the
+/// certificate's `SubjectPublicKeyInfo`. Written 0600 once, create-exclusive
+/// (temp + hard link); never replaced by the broker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModulePins {
+    dir: PathBuf,
+}
+
+/// Hex length of a SHA-256 digest.
+const SHA256_HEX: usize = 64;
+
+impl ModulePins {
+    /// Pins stored in `dir` (normally [`Pki::default_dir`]).
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    fn path(&self, uuid: &str) -> PathBuf {
+        let digest = openssl::sha::sha256(uuid.as_bytes());
+        let short = hex::encode(&digest[..8]);
+        self.dir.join(format!("module-pin-{short}.txt"))
+    }
+
+    /// The pinned SPKI SHA-256 (lowercase hex) for `uuid`, if any.
+    ///
+    /// # Errors
+    /// [`ControlError::Config`] on I/O errors; [`ControlError::Invalid`] if
+    /// the file does not hold one SHA-256 hex digest.
+    pub fn get(&self, uuid: &str) -> Result<Option<String>> {
+        let path = self.path(uuid);
+        let Some(text) = read_opt(&path)? else {
+            return Ok(None);
+        };
+        let pin = text.trim().to_ascii_lowercase();
+        if pin.len() != SHA256_HEX || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ControlError::invalid(format!(
+                "{}: not a SHA-256 pin; delete it to re-pin",
+                path.display()
+            )));
+        }
+        Ok(Some(pin))
+    }
+
+    /// Pins `spki_sha256` (lowercase hex) for `uuid` unless a pin already
+    /// exists, and returns the pin now stored: the new one, or the existing
+    /// one (possibly different) untouched. Never replaces a pin file, even
+    /// against another process: the file is written under a temp name and
+    /// then hard-linked to the final name, which fails if that name exists.
+    /// Creates the directory 0700; the file is 0600.
+    ///
+    /// # Errors
+    /// [`ControlError::Invalid`] if `spki_sha256` is not a SHA-256 hex
+    /// digest or the existing file is not a pin; [`ControlError::Config`] on
+    /// I/O errors.
+    pub fn pin_first(&self, uuid: &str, spki_sha256: &str) -> Result<String> {
+        if spki_sha256.len() != SHA256_HEX || !spki_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ControlError::invalid(
+                "module pin is not a SHA-256 hex digest",
+            ));
+        }
+        let io_err =
+            |e: std::io::Error| ControlError::config(format!("{}: {e}", self.dir.display()));
+        fs::create_dir_all(&self.dir).map_err(io_err)?;
+        fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700)).map_err(io_err)?;
+        let pin = spki_sha256.to_ascii_lowercase();
+        let path = self.path(uuid);
+        if link_exclusive(&path, &format!("{pin}\n"), 0o600)? {
+            return Ok(pin);
+        }
+        self.get(uuid)?.ok_or_else(|| {
+            ControlError::config(format!("{}: vanished while pinning", path.display()))
+        })
+    }
+}
+
+/// Writes `text` to a temp file (pid-unique, created with `mode`) and
+/// hard-links it to `path`. `Ok(false)` if `path` already exists, which is
+/// left as it was. The temp file is removed once created; one that already
+/// exists (a leftover) is an error naming it, never "already pinned".
+fn link_exclusive(path: &Path, text: &str, mode: u32) -> Result<bool> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let tmp_err = |e: std::io::Error| ControlError::config(format!("{}: {e}", tmp.display()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&tmp)
+        .map_err(tmp_err)?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(tmp_err);
+    drop(file);
+    let linked = written.map(|()| fs::hard_link(&tmp, path));
+    // Best effort: the link (or the original error) matters more than cleanup.
+    let _ = fs::remove_file(&tmp);
+    match linked? {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(ControlError::config(format!("{}: {e}", path.display()))),
+    }
+}
+
 /// Whether a loaded server identity can be kept: right SAN, signed by `ca`,
 /// and not expiring within [`SERVER_RENEW_DAYS`]. A signature check that
 /// errors (for example a key type that does not match the CA's) counts as
@@ -424,7 +548,7 @@ fn server_is_current(id: &Identity, ca: &Ca, hostname: &str) -> Result<bool> {
             false
         }
     };
-    Ok(id.has_dns_san(hostname) && signed_by_ca && id.cert().not_after() > renew_by)
+    Ok(id.has_san(hostname) && signed_by_ca && id.cert().not_after() > renew_by)
 }
 
 fn load_identity(dir: &Path, cert_file: &str, key_file: &str) -> Result<Option<Identity>> {
@@ -482,6 +606,14 @@ fn write_atomic(path: &Path, text: &str, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// The address bytes as an X.509 IP SAN stores them (4 or 16 bytes).
+fn ip_octets(ip: &IpAddr) -> Vec<u8> {
+    match ip {
+        IpAddr::V4(v4) => v4.octets().to_vec(),
+        IpAddr::V6(v6) => v6.octets().to_vec(),
+    }
+}
+
 fn rsa_key() -> Result<PKey<Private>> {
     let rsa = Rsa::generate(RSA_BITS).map_err(invalid)?;
     PKey::from_rsa(rsa).map_err(invalid)
@@ -527,10 +659,12 @@ fn invalid(e: impl fmt::Display) -> ControlError {
 #[cfg(test)]
 pub(crate) mod test_fixture {
     use super::{Ca, Pki};
+    use openssl::bn::{BigNum, BigNumRef};
     use openssl::ec::{EcGroup, EcKey};
     use openssl::hash::MessageDigest;
     use openssl::nid::Nid;
     use openssl::pkey::{PKey, Private};
+    use openssl::rsa::Rsa;
     use openssl::stack::Stack;
     use openssl::x509::store::X509StoreBuilder;
     use openssl::x509::{
@@ -550,6 +684,37 @@ pub(crate) mod test_fixture {
             server,
         }
     });
+
+    /// A CA that is not ours, standing in for LG's / AWS's issuer (D21).
+    pub(crate) static FOREIGN_CA: LazyLock<Ca> =
+        LazyLock::new(|| Ca::generate("Fake LG test CA").unwrap());
+
+    /// An RSA key whose public half equals `key`'s but whose private
+    /// exponents are wrong: OpenSSL takes it as `key`'s pair (the public
+    /// parts match) yet every signature it makes is invalid.
+    pub(crate) fn mismatched_rsa_key(key: &PKey<Private>) -> PKey<Private> {
+        let rsa = key.rsa().unwrap();
+        let two = BigNum::from_u32(2).unwrap();
+        let bump = |n: &BigNumRef| {
+            let mut out = BigNum::new().unwrap();
+            out.checked_add(n, &two).unwrap();
+            out
+        };
+        let broken = Rsa::from_private_components(
+            rsa.n().to_owned().unwrap(),
+            rsa.e().to_owned().unwrap(),
+            bump(rsa.d()),
+            rsa.p().unwrap().to_owned().unwrap(),
+            rsa.q().unwrap().to_owned().unwrap(),
+            bump(rsa.dmp1().unwrap()),
+            bump(rsa.dmq1().unwrap()),
+            rsa.iqmp().unwrap().to_owned().unwrap(),
+        )
+        .unwrap();
+        let broken = PKey::from_rsa(broken).unwrap();
+        assert!(broken.public_eq(key), "same public key");
+        broken
+    }
 
     /// A fresh EC P-256 key (cheap to generate, unlike RSA).
     pub(crate) fn p256_key() -> PKey<Private> {
@@ -723,10 +888,79 @@ mod tests {
 
     #[test]
     fn server_cert_carries_san() {
-        assert!(FIXTURE.server.has_dns_san(HOSTNAME));
-        assert!(!FIXTURE.server.has_dns_san("other.test"));
+        assert!(FIXTURE.server.has_san(HOSTNAME));
+        assert!(FIXTURE.server.has_san("CONTROLZ.test"));
+        assert!(!FIXTURE.server.has_san("other.test"));
+        assert!(!FIXTURE.server.has_san("192.0.2.10"));
         assert!(chains_to(FIXTURE.server.cert(), FIXTURE.ca.cert()));
         assert!(!chains_to(FIXTURE.server.cert(), FIXTURE.client_ca.cert()));
+    }
+
+    #[test]
+    fn ip_host_gets_an_ip_san() {
+        let v4 = FIXTURE.ca.issue_server("192.0.2.10").unwrap(); // privacy:allow (TEST-NET-1)
+        assert!(v4.has_san("192.0.2.10")); // privacy:allow (TEST-NET-1)
+        assert!(!v4.has_san("192.0.2.11")); // privacy:allow (TEST-NET-1)
+        let names = v4.cert().subject_alt_names().unwrap();
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            names.get(0).unwrap().ipaddress(),
+            Some(&[192, 0, 2, 10][..])
+        );
+        assert_eq!(
+            names.get(0).unwrap().dnsname(),
+            None,
+            "no DNS SAN for an IP"
+        );
+
+        let v6 = FIXTURE.ca.issue_server("2001:db8::1").unwrap();
+        assert!(v6.has_san("2001:db8::1"));
+        assert!(
+            v6.has_san("2001:0db8:0:0:0:0:0:1"),
+            "same address, other spelling"
+        );
+        assert!(!v6.has_san("2001:db8::2"));
+        assert!(!FIXTURE.server.has_san("2001:db8::1"));
+    }
+
+    /// A client that verifies the chain and the IP SAN, as the module would
+    /// when `/route` hands it a bare IP.
+    #[tokio::test]
+    async fn client_verifies_the_server_by_ip() {
+        use openssl::ssl::{SslConnector, SslMethod, SslVersion};
+        use std::pin::Pin;
+        use tokio::net::{TcpListener, TcpStream};
+
+        let id = FIXTURE.ca.issue_server("127.0.0.1").unwrap();
+        let acceptor = crate::ac::tls::server_acceptor(id.cert(), id.key()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let _ = crate::ac::tls::accept(&acceptor, tcp).await;
+            }
+        });
+        let connect = |host: &'static str| async move {
+            let mut b = SslConnector::builder(SslMethod::tls_client()).unwrap();
+            b.set_min_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+            b.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+            b.set_cipher_list("ECDHE-RSA-AES256-SHA@SECLEVEL=0")
+                .unwrap();
+            b.cert_store_mut()
+                .add_cert(FIXTURE.ca.cert().clone())
+                .unwrap();
+            let ssl = b.build().configure().unwrap().into_ssl(host).unwrap();
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let mut tls = tokio_openssl::SslStream::new(ssl, tcp).unwrap();
+            Pin::new(&mut tls).connect().await.map(drop)
+        };
+        connect("127.0.0.1").await.expect("IP SAN must verify");
+        assert!(
+            connect("127.0.0.2").await.is_err(),
+            "another IP must fail verification"
+        );
+        server.await.unwrap();
     }
 
     /// A self-signed CA with an EC key, so verifying an RSA-signed cert
@@ -821,7 +1055,7 @@ mod tests {
         let new_ca_key = loaded.ca.cert().public_key().unwrap();
         assert!(!new_ca_key.public_eq(FIXTURE.ca.identity().key()));
         assert!(loaded.server.cert().verify(&new_ca_key).unwrap());
-        assert!(loaded.server.has_dns_san(HOSTNAME));
+        assert!(loaded.server.has_san(HOSTNAME));
         assert!(server_is_current(&loaded.server, &loaded.ca, HOSTNAME).unwrap());
         assert!(!server_is_current(&FIXTURE.server, &loaded.ca, HOSTNAME).unwrap());
         fs::remove_dir_all(&dir).unwrap();
@@ -862,6 +1096,106 @@ mod tests {
             FIXTURE.server.cert().to_der().unwrap(),
             "the server CA and certificate are unaffected"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn module_pins_are_private_hashed_by_uuid_and_survive_reload() {
+        const UUID: &str = "00000000-fake-0000-0000-000000000000";
+        let dir = std::env::temp_dir().join(format!("controlz-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let pins = ModulePins::new(&dir);
+        assert_eq!(pins.get(UUID).unwrap(), None);
+        let pin = "AB".repeat(32);
+        assert_eq!(pins.pin_first(UUID, &pin).unwrap(), "ab".repeat(32));
+
+        let files: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        let expected = format!(
+            "module-pin-{}.txt",
+            hex::encode(&openssl::sha::sha256(UUID.as_bytes())[..8])
+        );
+        assert_eq!(files, vec![expected.clone()], "one file, no temp left");
+        assert!(!expected.contains("fake"), "no uuid in the file name");
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(&expected)), 0o600);
+
+        // A new store on the same directory (a restart) sees the pin.
+        let reloaded = ModulePins::new(&dir);
+        assert_eq!(reloaded.get(UUID).unwrap(), Some("ab".repeat(32)));
+        assert_eq!(reloaded.get("11111111-fake").unwrap(), None);
+
+        assert!(pins.pin_first(UUID, "not-hex").is_err());
+        fs::write(dir.join(&expected), "garbage\n").unwrap();
+        assert!(matches!(
+            reloaded.get(UUID),
+            Err(ControlError::Invalid { .. })
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_existing_module_pin_is_never_overwritten() {
+        const UUID: &str = "00000000-fake-0000-0000-000000000000";
+        let dir = std::env::temp_dir().join(format!("controlz-pins-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let first = "ab".repeat(32);
+        let other = "cd".repeat(32);
+        // Two stores on one directory stand in for two processes.
+        let a = ModulePins::new(&dir);
+        let b = ModulePins::new(&dir);
+        assert_eq!(a.pin_first(UUID, &first).unwrap(), first);
+        assert_eq!(
+            b.pin_first(UUID, &other).unwrap(),
+            first,
+            "existing pin wins"
+        );
+        assert_eq!(a.pin_first(UUID, &first).unwrap(), first, "same key: no-op");
+        assert_eq!(b.get(UUID).unwrap(), Some(first.clone()));
+        let file = a.path(UUID);
+        assert_eq!(fs::read_to_string(&file).unwrap(), format!("{first}\n"));
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(names, vec![file.clone()], "no temp file left");
+
+        // A file that is not a pin is not replaced either: re-pinning fails.
+        fs::write(&file, "garbage\n").unwrap();
+        assert!(matches!(
+            b.pin_first(UUID, &other),
+            Err(ControlError::Invalid { .. })
+        ));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "garbage\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A leftover temp file is an error that names it, not "already
+    /// pinned"; it is left alone and no pin is written.
+    #[test]
+    fn a_leftover_temp_file_is_an_error_not_an_existing_pin() {
+        const UUID: &str = "00000000-fake-0000-0000-000000000000";
+        let dir = std::env::temp_dir().join(format!("controlz-pins-tmp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let pins = ModulePins::new(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut tmp = pins.path(UUID).into_os_string();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        let tmp = PathBuf::from(tmp);
+        fs::write(&tmp, "leftover\n").unwrap();
+
+        let err = pins.pin_first(UUID, &"ab".repeat(32)).unwrap_err();
+        assert!(matches!(err, ControlError::Config { .. }), "{err:?}");
+        assert!(err.to_string().contains(&*tmp.to_string_lossy()), "{err}");
+        assert_eq!(pins.get(UUID).unwrap(), None);
+        assert_eq!(fs::read_to_string(&tmp).unwrap(), "leftover\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 

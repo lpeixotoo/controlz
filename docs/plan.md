@@ -205,34 +205,48 @@ Goal: pick a local route for the S4NQ09WA51A and control it from the CLI. Route 
 - notes: user asked to double-check the 2026-11-25 screenshots (2026-11-26). Needs the user present. Result: the router has no local-name option. Closed with the user's OK (2026-11-27).
 
 ### T1.8 — Provisioning DNS fallback
-- status: todo
+- status: done
 - deps: T1.3, T1.7
 - owner: implementer
 - files: core/Cargo.toml, core/src/ac/dns.rs, cli/src/ac.rs
 - kb: AC — local control options (T1.1 findings: DNS plan); Home network; Gotchas
 - design: -
-- approach: Only needed if passing apiServer/mqttServer in `getDeviceInfo` does not stop the one-time `common.lgthinq.com` call. hickory-server resolver on the Mac answering `common.lgthinq.com` (and our hostname, if T1.7 found no router option) and forwarding the rest, run only during `controlz ac setup --dns`.
+- approach: hickory-proto DNS responder on the Mac (UDP/TCP :53 on the wildcard address, subnet-filtered) answering `*.lgthinq.com` and the sslip name with the Mac's address and forwarding the rest upstream. Runs during `controlz ac setup --dns` and `controlz ac serve --dns`, while the router's "specific DNS server" points at the Mac.
 - acceptance:
-  - [ ] Tests: the resolver answers the overridden names and forwards others
-  - [ ] Whether UDP 53 binds unprivileged on macOS 26 is checked and recorded in the KB
-  - [ ] User-guided router steps (set and then revert "specific DNS server") documented in the KB
-- notes: may be dropped (with the user's OK) if T1.9 shows it is not needed.
+  - [x] Tests: the resolver answers the overridden names and forwards others
+  - [x] Whether UDP 53 binds unprivileged on macOS 26 is checked and recorded in the KB
+  - [x] User-guided router steps (set and then revert "specific DNS server") documented in the KB
+- notes: needed (2026-11-28): on the device neither a plain IP nor sslip in getDeviceInfo stopped the AC from ignoring our server (see T1.9 notes). Builds on T1.9's uncommitted Phase A code. The router change ("Servidor DNS Específico" = the Mac, then back) is a user action, approved each time. Closed with the user's OK (2026-11-28), committed with T1.9.
 
 ### T1.9 — Provision the real AC + `controlz ac status|set`
-- status: todo
-- deps: T1.3, T1.4, T1.5, T1.6, T1.7
+- status: done
+- deps: T1.3, T1.4, T1.5, T1.6, T1.7, T1.8
 - owner: implementer
 - files: core/src/ac/mod.rs, core/src/ac/controller.rs, cli/src/ac.rs, docs/knowledge_base.md
 - kb: AC — local control options (T1.1 findings); Home network; Devices (AC); Decisions (D4, D12, D20); Open questions (hostname)
 - design: -
 - approach: `controlz ac serve` (HTTPS + MQTT) plus the full setup on the device with the user present, then `controlz ac status|set` over the running server. Hostname order, stopping at the first that works: (1) plain IP in `/route`; (2) a router local name, if T1.7 found one; (3) `<mac-ip>.sslip.io`; (4) user-owned domain; (5) own resolver (T1.8). The user picks before (3)–(5), since they touch D4 or the whole-home DNS. The uuid from setup's `getDeviceInfo` is passed to the HTTPS and MQTT servers as the session's expected uuid.
 - acceptance:
-  - [ ] The AC completes provisioning to the Mac
-  - [ ] `controlz ac status` shows live power, mode and temperature; a `set` changes the unit and the change is read back
-  - [ ] The hostname strategy that worked is recorded as a decision; the procedure and quirks (ping/pong, power cycle after releaseDev) in the KB
-  - [ ] The ECDHE-only server suites (T1.4) work with the real AC; if not, the fallback list is used and the reason recorded in the KB
-  - [ ] The T1.4 security-review hardening (separate client CA, no unsafe renegotiation, name constraints if tried) works with the real AC; anything that fell back is recorded in the KB with the reason
-- notes: needs a DHCP reservation for the Mac (and the AC) first. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. Add T1.8 to deps if option 1 fails on the device. T1.5 checks (2026-11-27): (a) the broker drops completeProvisioning if the module publishes preDeploy/deploy before subscribing to `lime/devices/<uuid>` — if so, send the pending reply on SUBSCRIBE; (b) every device message must carry `did` — if the module omits it, accept a missing `did` on the per-uuid topics; also confirm payload shapes, whether `req_timesync` needs a reply, and whether QoS 1 commands need retransmit.
+  - [x] The AC completes provisioning to the Mac
+  - [x] `controlz ac status` shows live power, mode and temperature; a `set` changes the unit and the change is read back
+  - [x] The hostname strategy that worked is recorded as a decision; the procedure and quirks (ping/pong, power cycle after releaseDev) in the KB
+  - [x] The ECDHE-only server suites (T1.4) work with the real AC; if not, the fallback list is used and the reason recorded in the KB
+  - [x] The T1.4 security-review hardening (separate client CA, no unsafe renegotiation) works with the real AC; anything that fell back is recorded in the KB with the reason (name constraints: T1.10)
+- notes: the Mac needs a fixed IP (router DHCP reservation, details in docs/local.md) with its Private Wi-Fi Address kept on "Fixed"; the AC needs none. After provisioning the official ThinQ app stops working with the AC until its Wi-Fi is reset. On the device the AC ignored apiServer/mqttServer and asked `common.lgthinq.com` first, so T1.8 was needed; the hostname that works is sslip (D22), and the module keeps its LG/AWS client cert (pinned, D21). The reboot test passed. The temporary payload diagnostics were removed and the review findings fixed (refuse `set` until re-provisioned, ACK counting, full-state read-back). Follow-ups: B1, T7.5. Closed with the user's OK (2026-11-28).
+
+### T1.10 — CA name constraints on the real AC
+- status: todo
+- deps: T1.9
+- owner: implementer
+- files: core/src/ac/pki.rs, cli/src/ac.rs, docs/knowledge_base.md
+- kb: AC — local control options (T1.1 findings: TLS / certificates); Decisions (D20, hostname decision from T1.9); Gotchas (AC server security)
+- design: -
+- approach: From the 2026-11-26 security review (finding 3), deferred out of T1.9 by the user (2026-11-27) so it can't mix with T1.9's unknowns. Add a critical `nameConstraints` extension to the server CA, permitting only the hostname T1.9 settled on (IP or DNS name), then re-provision the AC once with the new CA. A CA change orphans the enrolled module, so this is a full setup cycle with the user present.
+- acceptance:
+  - [ ] Tests: the constrained CA signs a server cert for the permitted name; a cert for any other name fails verification against it
+  - [ ] The AC re-provisions with the constrained CA and `controlz ac status|set` still work
+  - [ ] Result recorded in the KB; if the module rejects the constraint, revert to the unconstrained CA, re-provision, and record why
+- notes: needs the user at the AC (setup mode, Wi-Fi switch, password in their own Terminal), as in T1.9.
 
 ## P2 — Swift bridge
 Goal: expose the Rust core to Swift with uniffi and a one-command build.
@@ -591,10 +605,40 @@ Goal: nice-to-haves.
   - [ ] A sandboxed process can't read a file outside its container (manual check, noted in the KB)
 - notes: from the T1.2 security discussion (2026-11-26); may touch D10, so the brief asks the user first.
 
+### T7.5 — AC hostname without sslip.io
+- status: todo
+- deps: T6.3, T7.1, T7.2, T7.3, T7.4
+- owner: implementer
+- files: core/src/ac/dns.rs, core/src/ac/setup.rs, cli/src/ac.rs, docs/knowledge_base.md
+- kb: AC — local control options (T1.1 findings: DNS plan); Home network; Decisions (D4, D22)
+- design: -
+- approach: Follow-up improvement to D22, to do after the rest of the plan is finished (user, 2026-11-28). Drop the ongoing dependency on the public sslip.io DNS, so the AC finds the Mac using only our own DNS. Options (pick in the brief): a permanent own resolver with the router's "specific DNS server" (whole-home effect), or provisioning a name that only our resolver answers. Weigh the whole-home DNS risk against the gain for D4.
+- acceptance:
+  - [ ] The AC reconnects after a power cut with no sslip.io lookup
+  - [ ] Whole-home DNS side effects (if any) documented, with a revert procedure in the KB
+  - [ ] D22 superseded or amended, with the user's OK
+- notes: from D22 (user, 2026-11-28).
+
 ---
 
 ## Bugs
 <!-- B# tasks use the same format, plus: severity (critical|major|minor), repro, affects (T#) -->
+
+### B1 — A "busy" send failure leaves a spare expected ACK
+- status: todo
+- severity: minor
+- deps: -
+- owner: implementer
+- affects: T1.9
+- files: core/src/ac/mqtt.rs, core/src/ac/controller.rs
+- kb: AC — local control options (T1.1 findings: ACKs on the real AC)
+- design: -
+- repro: code review (2026-11-28). The broker's `send_packet` returns the same `ControlError::Network` for not-connected, busy (outbound queue full, frame never queued), disconnected and timed-out (frame possibly sent). So `send_owed` keeps the owed-ACK entry for all of them. After a "busy" failure the spare entry shifts by one frame, and later commands are confirmed by their partial report instead of their ACK until a reconnect or a 30 s gap. Never a false confirmation.
+- approach: give `send_packet` distinct errors (or a "queued" flag) so `send_owed` drops the entry exactly when the frame never left; fix the understated doc comment in controller.rs (`send_owed`, "busy" case).
+- acceptance:
+  - [ ] "busy" and "not connected" drop the owed entry; "timed out" keeps it (tests)
+  - [ ] The controller.rs comment describes the real effect
+- notes: from the T1.9 review (user asked to log it, 2026-11-28).
 
 ---
 
@@ -647,3 +691,5 @@ Goal: nice-to-haves.
 - 2026-11-27 · T1.5 done · user approved close
 - 2026-11-27 · T1.6 done · user approved close
 - 2026-11-27 · T1.7 done · router has no local-name option; hostname option (2) ruled out
+- 2026-11-28 · T1.8 done · own DNS responder (hickory-proto) for the one-time common.lgthinq.com lookup during setup; port 53 binds only on the wildcard address; router steps in the KB
+- 2026-11-28 · T1.9 done · real AC provisioned to the Mac (setup → serve, LG cert pinned D21, sslip hostname D22, MQTT 3.1); `controlz ac status|set` verified on the device; reboot test passed

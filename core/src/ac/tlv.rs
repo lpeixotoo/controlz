@@ -835,8 +835,18 @@ pub enum AcCommand {
     /// 0x1f7 = 0, sent alone: with other fields the unit plays the shutdown
     /// melody and keeps running (wiki).
     PowerOff,
-    /// 0x1f7 = 1, sent alone.
+    /// 0x1f7 = 1, sent alone. The real unit ACKs this but stays off (T1.9
+    /// device run); use [`Self::PowerOnWith`].
     PowerOn,
+    /// 0x1f7 = 1 together with mode, fan and setpoint in one frame, in the
+    /// module's own report order (0x1f9, 0x1f7, 0x1fa, 0x1fe), like the IR
+    /// remote's full state: the only power-on the unit obeys (T1.9).
+    PowerOnWith {
+        mode: AcMode,
+        fan: FanSpeed,
+        /// [`Setpoint::Offset`] in Auto, [`Setpoint::Temp`] otherwise.
+        setpoint: Setpoint,
+    },
     /// Mode, fan and setpoint always go together: the unit ignores a
     /// temperature sent without mode and fan (wiki).
     Set {
@@ -855,7 +865,8 @@ impl AcCommand {
     /// The TLVs this command sends, in order.
     ///
     /// # Errors
-    /// [`ControlError::Invalid`] if a `Set` setpoint doesn't match its mode.
+    /// [`ControlError::Invalid`] if a `Set` or `PowerOnWith` setpoint doesn't
+    /// match its mode.
     pub fn tlvs(&self) -> Result<Vec<Tlv>> {
         let tlv = |kind, value: u8| Tlv {
             kind,
@@ -864,24 +875,25 @@ impl AcCommand {
         Ok(match self {
             Self::PowerOff => vec![tlv(field::POWER, 0)],
             Self::PowerOn => vec![tlv(field::POWER, 1)],
+            Self::PowerOnWith {
+                mode,
+                fan,
+                setpoint,
+            } => {
+                check_setpoint(*mode, *setpoint)?;
+                vec![
+                    tlv(field::MODE, mode.code()),
+                    tlv(field::POWER, 1),
+                    tlv(field::FAN, fan.code()),
+                    tlv(field::SETPOINT, setpoint.raw()),
+                ]
+            }
             Self::Set {
                 mode,
                 fan,
                 setpoint,
             } => {
-                match (mode, setpoint) {
-                    (AcMode::Auto, Setpoint::Temp(_)) => {
-                        return Err(ControlError::invalid(
-                            "auto mode takes a comfort offset (-2..=+2), not a target temperature",
-                        ));
-                    }
-                    (m, Setpoint::Offset(_)) if *m != AcMode::Auto => {
-                        return Err(ControlError::invalid(format!(
-                            "{m} mode takes a target temperature, not a comfort offset"
-                        )));
-                    }
-                    _ => {}
-                }
+                check_setpoint(*mode, *setpoint)?;
                 vec![
                     tlv(field::MODE, mode.code()),
                     tlv(field::FAN, fan.code()),
@@ -897,6 +909,19 @@ impl AcCommand {
                 },
             )],
         })
+    }
+}
+
+/// Rejects a setpoint that does not fit `mode` (offset only in Auto).
+fn check_setpoint(mode: AcMode, setpoint: Setpoint) -> Result<()> {
+    match (mode, setpoint) {
+        (AcMode::Auto, Setpoint::Temp(_)) => Err(ControlError::invalid(
+            "auto mode takes a comfort offset (-2..=+2), not a target temperature",
+        )),
+        (m, Setpoint::Offset(_)) if m != AcMode::Auto => Err(ControlError::invalid(format!(
+            "{m} mode takes a target temperature, not a comfort offset"
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -1108,6 +1133,68 @@ mod tests {
         assert_device_round_trip(&hex);
     }
 
+    /// The real AC ACKs a command with prefix `0201` and a query with
+    /// `0301`, both seq 0, in uppercase hex (T1.9 device run).
+    #[test]
+    fn real_ack_fixtures() {
+        for (fixture, prefix) in [
+            (fixture!("ack_command"), "0201"),
+            (fixture!("ack_query"), "0301"),
+        ] {
+            let hex = data(fixture);
+            assert!(hex.starts_with(prefix), "{hex}");
+            assert_eq!(hex, hex.to_ascii_uppercase());
+            assert_eq!(
+                decode_device_packet(&hex).unwrap(),
+                DevicePacket::Ack { seq: 0 }
+            );
+            assert_device_round_trip(&hex);
+        }
+    }
+
+    /// The modem's own `AA1F` message after provisioning (it carries the
+    /// serial in ASCII; the fixture's is fake) is no UART frame.
+    #[test]
+    fn modem_info_fixture() {
+        let hex = data(fixture!("modem_info"));
+        assert_eq!(
+            decode_device_packet(&hex).unwrap(),
+            DevicePacket::Modem {
+                prefix: [0xaa, 0x1f],
+                len: 29
+            }
+        );
+        let bytes = hex::decode(&hex).unwrap();
+        assert_eq!(bytes.len(), usize::from(bytes[1]), "byte 1 is the length");
+        assert!(hex.contains(&hex::encode_upper("FAKE0000000")));
+    }
+
+    /// A full report with the real layout (`b5` = 2, `b6` = 0x04, the real
+    /// field set and order; fake values), in uppercase hex.
+    #[test]
+    fn full_state_report_fixture() {
+        let hex = data(fixture!("state_report_full"));
+        assert_eq!(hex, hex.to_ascii_uppercase());
+        let DevicePacket::Data { header, tlvs } = decode_device_packet(&hex).unwrap() else {
+            panic!("expected data");
+        };
+        assert_eq!(
+            (header.direction, header.b5, header.b6),
+            (Direction::FromAppliance, 0x02, 0x04)
+        );
+        assert_eq!(tlvs.len(), 52);
+        let mut state = AcState::default();
+        state.apply(&tlvs);
+        assert_eq!(state.power, Some(true));
+        assert_eq!(state.mode, Some(AcMode::Cool));
+        assert_eq!(state.fan, Some(FanSpeed::Mid));
+        assert_eq!(state.room_temp.map(RoomTemp::celsius), Some(24.5));
+        assert_eq!(state.target_temp().map(TargetTemp::celsius), Some(23.0));
+        assert_eq!(state.light, Some(true));
+        assert_eq!(state.unknown.len(), 46);
+        assert_device_round_trip(&hex);
+    }
+
     #[test]
     fn command_fixtures_round_trip() {
         let offset = |o| Setpoint::Offset(ComfortOffset::new(o).unwrap());
@@ -1293,6 +1380,47 @@ mod tests {
             setpoint: offset,
         };
         assert!(message(encode(&cool_offset, 1)).contains("cool mode takes a target temperature"));
+        let on_auto_temp = AcCommand::PowerOnWith {
+            mode: AcMode::Auto,
+            fan: FanSpeed::Auto,
+            setpoint: temp,
+        };
+        assert!(message(encode(&on_auto_temp, 1)).contains("auto mode takes a comfort offset"));
+    }
+
+    /// Power-on carries the full state in one command frame, in the
+    /// module's report order (T1.9 device run).
+    #[test]
+    fn power_on_with_state_is_one_frame() {
+        let cmd = AcCommand::PowerOnWith {
+            mode: AcMode::Cool,
+            fan: FanSpeed::try_from(6).unwrap(),
+            setpoint: Setpoint::Temp(TargetTemp::from_celsius(21.0).unwrap()),
+        };
+        let (prefix, frame) = decode_command_packet(&encode(&cmd, 9).unwrap()).unwrap();
+        assert_eq!(prefix, COMMAND_PREFIX);
+        assert_eq!(
+            frame.header,
+            Header {
+                direction: Direction::ToAppliance,
+                b5: 2,
+                b6: 1,
+                seq: 9
+            }
+        );
+        assert_eq!(
+            frame.payload,
+            [0x7e, 0x40, 0x7d, 0xc1, 0x7e, 0x86, 0x7f, 0x90, 0x2a]
+        );
+        assert_eq!(
+            decode_tlvs(&frame.payload).unwrap(),
+            vec![
+                t(field::MODE, 0),
+                t(field::POWER, 1),
+                t(field::FAN, 6),
+                t(field::SETPOINT, 42)
+            ]
+        );
     }
 
     #[test]

@@ -1,1 +1,1 @@
-{"did":"00000000-fake-0000-0000-000000000000","mid":1700000000003,"cmd":"completeProvisioning_ack","type":0,"data":{"result":0}}
+{"mid":4,"did":"00000000-fake-0000-0000-000000000000","kind":"RAC_000000_WW","cmd":"completeProvisioning_ack","rssi":-50,"fs":"idle","br":9600,"per":0,"data":null,"type":1}

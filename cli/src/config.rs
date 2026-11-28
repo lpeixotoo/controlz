@@ -9,7 +9,7 @@ use crate::secrets::{self, Error, SERVICE};
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCmd {
-    /// Set a config key (tv.host, tv.mac)
+    /// Set a config key (tv.host, tv.mac, ac.uuid, ac.bind, ac.host)
     Set { key: String, value: String },
     /// Print a config key
     Get { key: String },
@@ -98,4 +98,23 @@ fn read_secret_from_stdin(name: &str) -> Result<Secret, Error> {
         return Err(format!("no value for {name} on stdin").into());
     }
     Ok(Secret::new(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use controlz_core::CONFIG_KEYS;
+
+    #[test]
+    fn set_help_names_every_config_key() {
+        let cmd = ConfigCmd::augment_subcommands(clap::Command::new("config"));
+        let about = cmd
+            .find_subcommand("set")
+            .and_then(clap::Command::get_about)
+            .map(ToString::to_string)
+            .unwrap();
+        for key in CONFIG_KEYS {
+            assert!(about.contains(key), "{key} missing from {about:?}");
+        }
+    }
 }
