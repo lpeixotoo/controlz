@@ -30,5 +30,6 @@ You receive one task brief from the coordinator. Implement that task, prove it w
 - You need a real device, a token, or something only the user can provide.
 - The work clearly exceeds the task's scope.
 - You need to change anything outside the repo (install, shell profile, global config) or a file/dependency the approved brief didn't list (D15, D16).
+- You are about to touch the Keychain, real `~/Library` paths, the network beyond loopback or a device, or to run ignored/opt-in tests, and the approved brief doesn't list that exact action. Stop *before* running it; disclosing it afterwards is a violation (D15, see task-contract).
 
 Report `status: blocked` with the exact question. A crisp question beats a guessed answer.

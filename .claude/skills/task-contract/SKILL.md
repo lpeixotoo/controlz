@@ -48,6 +48,8 @@ Read-only agents (reviewer) skip brief mode.
 ## Outside the repo (D15)
 Never change anything outside the repository — installs, `~/.zshrc` and other profiles, global git/cargo/brew config, `~/Library`, system settings — unless that exact change was listed in an approved brief. Claude's own session scratchpad and build caches inside the repo are exempt. Unplanned need → stop and report `blocked`.
 
+**Stop first, never disclose after (D15, clarified 2026-11-27).** Before any command that touches the Keychain, real files under `~/Library` (config, PKI, sockets), the network beyond loopback, a real device, or system settings — and before running ignored or opt-in tests (`--run-ignored`, `--ignored`, `#[ignore]`d tests), which exist precisely because they touch such things — check that the approved brief lists that exact action. If it doesn't, don't run it: stop, report `status: blocked` with the exact command, and wait for the user. Doing it and disclosing it afterwards is a violation, even if the effect was undone. To find out which tests are ignored, list them (`cargo nextest list --run-ignored only`) or grep for `#[ignore]`; never run them to find out.
+
 ## Scope rules
 - Do exactly the task. No drive-by refactors, renames or dependency upgrades outside `files`.
 - If something outside scope is broken, mention it under `follow_ups`; don't fix it.

@@ -5,9 +5,13 @@
 //! the `SoftAP` setup client (port 5500); `cloud` is the local cloud HTTPS
 //! server the module calls while it is being provisioned; `mqtt` is the
 //! single-device MQTTS broker it connects to afterwards; `tlv` is the RAC
-//! TLV codec for the hex `device_packet` / `packet` payloads it carries.
+//! TLV codec for the hex `device_packet` / `packet` payloads it carries;
+//! `controller` runs the cloud and broker for one module and keeps its state;
+//! `dns` is the provisioning DNS fallback that points LG's setup host at us.
 
 pub mod cloud;
+pub mod controller;
+pub mod dns;
 pub mod mqtt;
 pub mod pki;
 pub mod setup;

@@ -17,14 +17,19 @@
 //!
 //! Hardening: the server only runs for one provisioning session
 //! ([`CloudSession::start`] → [`CloudServer::shutdown`], aborted on drop),
-//! binds one interface address (never the unspecified address), and signs at
-//! most one CSR, only for the session's uuid. Connections are capped, and
+//! and signs at most one CSR, only for the session's uuid. It listens on the
+//! wildcard address of the configured address's family, because macOS only
+//! lets unprivileged processes bind ports below 1024 there (a specific IP on
+//! 443 gives EACCES); TCP peers outside the configured address's subnet
+//! ([`IPV4_SUBNET_PREFIX`], [`IPV6_SUBNET_PREFIX`]) are dropped before the
+//! TLS handshake. Connections are capped, and
 //! handshakes, headers, bodies and whole connections are time-bounded. Logs
 //! never contain the uuid or the CSR.
 
 use std::convert::Infallible;
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -38,7 +43,7 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use openssl::ssl::SslAcceptor;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use super::pki::{Ca, MAX_CLIENT_DAYS, Pki};
@@ -68,14 +73,25 @@ const MAX_BUF_BYTES: usize = 16 * 1024;
 /// Pause after a failed `accept` (for example out of file descriptors).
 const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
 
+/// Prefix length of the IPv4 subnet whose peers may connect, derived from
+/// [`CloudConfig::bind`]. std has no netmask API, so this assumes the home
+/// LAN is a /24 (KB: Home network); a wider LAN would see its far hosts
+/// dropped, a narrower one lets in a few extra neighbours of the same /24.
+pub const IPV4_SUBNET_PREFIX: u32 = 24;
+/// Prefix length of the IPv6 subnet whose peers may connect (a LAN is a /64).
+pub const IPV6_SUBNET_PREFIX: u32 = 64;
+
 /// The names `/route/certificate` lists; each returns our server CA.
 const CERT_NAMES: [&str; 2] = ["common-server", "aws-iot"];
 
 /// Where the server listens and what it tells the module.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloudConfig {
-    /// The LAN interface address to listen on. The unspecified address
-    /// (`0.0.0.0`, `::`) is refused; loopback is allowed (tests).
+    /// This Mac's LAN address: the address the module is told about and the
+    /// one the peer filter's subnet is derived from. The server itself
+    /// listens on the unspecified address of the same family (see the module
+    /// docs). The unspecified address (`0.0.0.0`, `::`) is refused here,
+    /// since no subnet can be derived from it; loopback is allowed (tests).
     pub bind: IpAddr,
     /// The port to listen on: [`API_PORT`] in production, `0` in tests. The
     /// advertised ports stay [`API_PORT`] and [`MQTT_PORT`] either way.
@@ -138,6 +154,18 @@ impl CloudConfig {
     }
 }
 
+/// What the module has fetched so far in this session, for progress output.
+/// Counts only successful replies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CloudProgress {
+    /// `GET /route` answers.
+    pub route: u32,
+    /// `GET /route/certificate` answers that carried our CA.
+    pub ca: u32,
+    /// Whether the session's one client certificate was issued.
+    pub client_cert_issued: bool,
+}
+
 /// One provisioning session: the replies, the CA handed to the module, the
 /// client CA and the one uuid whose CSR may be signed (once).
 pub struct CloudSession {
@@ -147,6 +175,7 @@ pub struct CloudSession {
     client_ca: Ca,
     expected_uuid: String,
     signed: Mutex<bool>,
+    progress: watch::Sender<CloudProgress>,
 }
 
 impl fmt::Debug for CloudSession {
@@ -205,7 +234,8 @@ impl CloudSession {
     ///
     /// # Errors
     /// [`ControlError::Invalid`] if the config or uuid is invalid or the TLS
-    /// profile cannot be built; [`ControlError::Network`] if binding fails.
+    /// profile cannot be built; [`ControlError::Network`] if binding fails
+    /// (the message names the port, never an IP).
     pub async fn start(
         config: &CloudConfig,
         pki: &Pki,
@@ -214,20 +244,23 @@ impl CloudSession {
         let session = Arc::new(Self::new(config, pki, expected_uuid)?);
         warn_on_san_mismatch(config, pki);
         let acceptor = Arc::new(tls::server_acceptor(pki.server.cert(), pki.server.key())?);
-        let listener = TcpListener::bind(SocketAddr::new(config.bind, config.port))
+        let listener = TcpListener::bind(SocketAddr::new(wildcard_of(config.bind), config.port))
             .await
-            .map_err(|e| ControlError::network(format!("local cloud bind: {e}")))?;
-        let local_addr = listener
+            .map_err(|e| bind_error(config.port, &e))?;
+        let listen_addr = listener
             .local_addr()
-            .map_err(|e| ControlError::network(format!("local cloud bind: {e}")))?;
+            .map_err(|e| bind_error(config.port, &e))?;
         tracing::info!(
-            port = local_addr.port(),
+            port = listen_addr.port(),
             "cloud: provisioning session started"
         );
-        let task = tokio::spawn(accept_loop(listener, acceptor, session));
+        let progress = session.progress.subscribe();
+        let task = tokio::spawn(accept_loop(listener, acceptor, session, config.bind));
         Ok(CloudServer {
-            local_addr,
+            local_addr: SocketAddr::new(config.bind, listen_addr.port()),
+            listen_addr,
             task: Some(task),
+            progress,
         })
     }
 
@@ -246,6 +279,7 @@ impl CloudSession {
             client_ca: pki.client_ca.clone(),
             expected_uuid: expected_uuid.to_owned(),
             signed: Mutex::new(false),
+            progress: watch::Sender::new(CloudProgress::default()),
         })
     }
 
@@ -284,13 +318,17 @@ impl CloudSession {
     fn respond(&self, method: &Method, path: &str, query: Option<&str>, body: &[u8]) -> Reply {
         let reply = match (method, path, device_uuid(path)) {
             (&Method::POST, _, Some(uuid)) => self.sign(method, path, uuid, body),
-            (&Method::GET, "/route", _) => Reply::ok(json!({
-                "apiServer": self.api_server,
-                "mqttServer": self.mqtt_server,
-            })),
+            (&Method::GET, "/route", _) => {
+                self.progress.send_modify(|p| p.route += 1);
+                Reply::ok(json!({
+                    "apiServer": self.api_server,
+                    "mqttServer": self.mqtt_server,
+                }))
+            }
             (&Method::GET, "/route/certificate", _) => match query_param(query, "name") {
                 None => Reply::ok(json!(CERT_NAMES)),
                 Some(name) if CERT_NAMES.contains(&name) => {
+                    self.progress.send_modify(|p| p.ca += 1);
                     Reply::ok(json!({ "certificatePem": self.server_ca_pem }))
                 }
                 Some(_) => Reply::error(StatusCode::NOT_FOUND),
@@ -329,6 +367,7 @@ impl CloudSession {
         {
             Ok(pem) => {
                 *signed = true;
+                self.progress.send_modify(|p| p.client_cert_issued = true);
                 tracing::info!("cloud: client certificate issued");
                 Reply::ok(json!({ "certificatePem": pem }))
             }
@@ -360,16 +399,55 @@ impl CloudSession {
 }
 
 /// The `<uuid>` of `/device/<uuid>/certificate`, if `path` has that shape.
-/// Warns when the server certificate has no DNS SAN for the advertised host.
+/// The unspecified address of `ip`'s family (`0.0.0.0` or `::`).
+fn wildcard_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    }
+}
+
+/// Maps a bind failure to an error naming the port only (the address is
+/// always the wildcard; the Mac's IP stays out of messages).
+fn bind_error(port: u16, e: &io::Error) -> ControlError {
+    if e.kind() == io::ErrorKind::PermissionDenied {
+        ControlError::network(format!(
+            "local cloud bind: permission denied for port {port} on the wildcard address \
+             (macOS lets unprivileged processes bind ports below 1024 only on the \
+             wildcard address): {e}"
+        ))
+    } else {
+        ControlError::network(format!("local cloud bind on port {port}: {e}"))
+    }
+}
+
+/// Whether `peer` is in the same subnet as `bind` (/[`IPV4_SUBNET_PREFIX`] or
+/// /[`IPV6_SUBNET_PREFIX`]). IPv4-mapped IPv6 addresses count as IPv4, so a
+/// dual-stack `::` listener cannot be reached across families.
+pub(crate) fn same_subnet(bind: IpAddr, peer: IpAddr) -> bool {
+    match (bind.to_canonical(), peer.to_canonical()) {
+        (IpAddr::V4(b), IpAddr::V4(p)) => {
+            let mask = u32::MAX << (32 - IPV4_SUBNET_PREFIX);
+            u32::from(b) & mask == u32::from(p) & mask
+        }
+        (IpAddr::V6(b), IpAddr::V6(p)) => {
+            let mask = u128::MAX << (128 - IPV6_SUBNET_PREFIX);
+            u128::from(b) & mask == u128::from(p) & mask
+        }
+        _ => false,
+    }
+}
+
+/// Warns when the server certificate has no SAN for the advertised host.
 ///
-/// Not an error: an IP host is a legitimate experiment (T1.9) while
-/// `issue_server` writes only a DNS SAN. Without the warning the module would
-/// fail only after `/route` succeeds, with no visible reason.
+/// Not an error (the PKI is normally loaded for the same host, which
+/// re-issues the certificate), but without the warning the module would fail
+/// only after `/route` succeeds, with no visible reason.
 fn warn_on_san_mismatch(config: &CloudConfig, pki: &Pki) {
-    if !pki.server.has_dns_san(&config.advertised_host) {
+    if !pki.server.has_san(&config.advertised_host) {
         tracing::warn!(
             host = %config.advertised_host,
-            "cloud: server certificate has no DNS SAN for the advertised host; \
+            "cloud: server certificate has no SAN for the advertised host; \
              the module will likely reject the TLS handshake after /route"
         );
     }
@@ -405,14 +483,30 @@ fn query_param<'q>(query: Option<&'q str>, key: &str) -> Option<&'q str> {
 #[derive(Debug)]
 pub struct CloudServer {
     local_addr: SocketAddr,
+    listen_addr: SocketAddr,
     task: Option<JoinHandle<()>>,
+    progress: watch::Receiver<CloudProgress>,
 }
 
 impl CloudServer {
-    /// The address actually bound (useful with port 0).
+    /// Where the module reaches the server: [`CloudConfig::bind`] with the
+    /// port actually bound (useful with port 0).
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The socket actually listened on: the wildcard address of
+    /// [`CloudConfig::bind`]'s family and the bound port.
+    #[must_use]
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.listen_addr
+    }
+
+    /// What the module has fetched so far; changes as requests are answered.
+    #[must_use]
+    pub fn progress(&self) -> watch::Receiver<CloudProgress> {
+        self.progress.clone()
     }
 
     /// Stops accepting, closes every open connection and waits until the
@@ -436,18 +530,25 @@ impl Drop for CloudServer {
 }
 
 /// Accepts connections until aborted; aborting drops the `JoinSet`, which
-/// aborts every connection task.
+/// aborts every connection task. Peers outside `bind`'s subnet are closed
+/// before the TLS handshake.
 async fn accept_loop(
     listener: TcpListener,
     acceptor: Arc<SslAcceptor>,
     session: Arc<CloudSession>,
+    bind: IpAddr,
 ) {
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut connections = JoinSet::new();
     loop {
         while connections.try_join_next().is_some() {}
         let stream = match listener.accept().await {
-            Ok((stream, _peer)) => stream,
+            Ok((stream, peer)) if same_subnet(bind, peer.ip()) => stream,
+            Ok(_) => {
+                // No address: the module's and the Mac's IPs stay out of logs.
+                tracing::debug!("cloud: dropped a connection from outside the LAN subnet");
+                continue;
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "cloud: accept failed");
                 tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
@@ -512,8 +613,6 @@ mod tests {
     use crate::ac::pki::test_fixture::{FIXTURE, HOSTNAME, chains_to, csr_pem, p256_key};
     use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode, SslVersion};
     use openssl::x509::X509;
-    use std::io;
-    use std::net::{Ipv4Addr, Ipv6Addr};
     use std::pin::Pin;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio_openssl::SslStream;
@@ -711,13 +810,27 @@ mod tests {
     #[test]
     fn san_mismatch_is_warned_about() {
         assert_eq!(san_warning_logs(HOSTNAME), "");
+        let ip_pki = Pki {
+            server: FIXTURE.ca.issue_server("192.0.2.10").unwrap(),
+            ..FIXTURE.clone()
+        };
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            warn_on_san_mismatch(&config("192.0.2.10"), &ip_pki);
+        });
+        assert!(
+            buffer.0.lock().unwrap().is_empty(),
+            "an IP SAN matches an IP host"
+        );
         for host in ["192.0.2.10", "other.test"] {
             let logs = san_warning_logs(host);
             assert!(logs.contains("WARN"), "{logs}");
-            assert!(
-                logs.contains("no DNS SAN for the advertised host"),
-                "{logs}"
-            );
+            assert!(logs.contains("no SAN for the advertised host"), "{logs}");
             assert!(logs.contains(&format!("host={host}")), "{logs}");
         }
     }
@@ -785,6 +898,70 @@ mod tests {
         };
         let result = CloudSession::start(&c, &FIXTURE, UUID).await;
         assert!(matches!(result, Err(ControlError::Invalid { .. })));
+    }
+
+    #[test]
+    fn peer_filter_keeps_the_bind_subnet() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let v4 = ip("192.0.2.10");
+        for peer in [
+            "192.0.2.10",
+            "192.0.2.1",
+            "192.0.2.255",
+            "::ffff:192.0.2.77",
+        ] {
+            assert!(same_subnet(v4, ip(peer)), "{peer} must be accepted");
+        }
+        for peer in [
+            "192.0.3.10",
+            "198.51.100.10",
+            "127.0.0.1",
+            "0.0.0.0",
+            "2001:db8::10",
+            "::ffff:198.51.100.10",
+        ] {
+            assert!(!same_subnet(v4, ip(peer)), "{peer} must be dropped");
+        }
+        let v6 = ip("2001:db8:0:1::10");
+        for peer in ["2001:db8:0:1::1", "2001:db8:0:1:ffff:ffff:ffff:ffff"] {
+            assert!(same_subnet(v6, ip(peer)), "{peer} must be accepted");
+        }
+        for peer in ["2001:db8:0:2::10", "2001:db8:1:1::10", "::1", "192.0.2.10"] {
+            assert!(!same_subnet(v6, ip(peer)), "{peer} must be dropped");
+        }
+        // Loopback binds (tests) accept loopback peers.
+        assert!(same_subnet(ip("127.0.0.1"), ip("127.0.0.1")));
+        assert!(same_subnet(ip("::1"), ip("::1")));
+    }
+
+    #[test]
+    fn bind_errors_name_the_port_and_the_macos_rule() {
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        let message = bind_error(443, &denied).to_string();
+        assert!(message.contains("port 443"), "{message}");
+        assert!(
+            message.contains("only on the wildcard address"),
+            "{message}"
+        );
+        let in_use = io::Error::from(io::ErrorKind::AddrInUse);
+        let message = bind_error(443, &in_use).to_string();
+        assert!(
+            message.contains("local cloud bind on port 443"),
+            "{message}"
+        );
+        assert!(!message.contains("wildcard"), "{message}");
+    }
+
+    #[test]
+    fn wildcard_keeps_the_family() {
+        assert_eq!(
+            wildcard_of(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10))),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            wildcard_of("2001:db8::10".parse().unwrap()),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        );
     }
 
     // ---- Mock device over real TCP ----
@@ -872,7 +1049,10 @@ mod tests {
     async fn mock_device_provisions_over_tls() {
         let server = start().await;
         let addr = server.local_addr();
+        // Listens on the wildcard, reports and advertises the configured host.
         assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_eq!(server.listen_addr().ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(server.listen_addr().port(), addr.port());
 
         // 1. Route, accepting any certificate.
         let (status, body) = request(addr, None, "GET", "/route", b"").await;
@@ -949,6 +1129,16 @@ mod tests {
         assert_eq!(
             json_body(&body),
             json!({"resultCode": "0403", "result": null})
+        );
+        // Progress counts the successful replies only: one route, two CAs
+        // (the name list is not a CA), one certificate.
+        assert_eq!(
+            *server.progress().borrow(),
+            CloudProgress {
+                route: 1,
+                ca: 2,
+                client_cert_issued: true
+            }
         );
 
         server.shutdown().await;
